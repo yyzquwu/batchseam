@@ -307,3 +307,13 @@ def test_local_column_list_and_unpacked_args_keep_distinct_signatures():
     ''')
     assert [(r["callback"], r["mode"], r["confidence"], r["target"]) for r in rows] == [
         ("add", "multi", "ambiguous", None), ("normalize", "series", "polars", None)]
+
+
+def test_unknown_receiver_with_unpacked_callback_cannot_report_column_list_as_callback():
+    rows = scan('''
+        def packed(api, xs, *args):
+            api.map_batches(["x", "y"], *args, return_dtype=int, is_elementwise=True)
+            api.map_batches(xs, *args, is_elementwise=True)
+    ''')
+    assert [(r["mode"], r["callback"], r["target"]) for r in rows] == [
+        ("multi", "<unknown>", None), ("unknown", "<unknown>", None)]

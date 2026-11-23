@@ -404,11 +404,14 @@ def discover(source: str, path: str) -> list[dict]:
         confirmed = mode != "unknown"
         positional = _known_positional(call)
         keywords = {kw.arg for kw in call.keywords}
-        if mode != "multi" and ("exprs" in keywords or len(positional) >= 2
-                               and ("return_dtype" in keywords or _sequence(positional[0], scope, pos))):
+        if mode != "multi" and ("exprs" in keywords
+                               or positional and _sequence(positional[0], scope, pos)
+                               or len(positional) >= 2 and "return_dtype" in keywords):
             mode, index, confirmed = "multi", 1, False
         # With an unresolved receiver, two positional arguments can also mean (function, dtype).
-        callback = None if mode == "unknown" and len(positional) >= 2 else _callback(call, positional, index)
+        ambiguous_args = len(positional) >= 2 or len(positional) < len(call.args)
+        callback = (None if mode == "unknown" and ambiguous_args and "function" not in keywords
+                    else _callback(call, positional, index))
         kind = {ast.Name: "named", ast.Lambda: "lambda", ast.Attribute: "bound"}.get(type(callback), "other")
         if isinstance(callback, ast.Attribute):
             owner = _symbol(callback.value, scope, pos)

@@ -34,3 +34,16 @@ def test_suite_works_from_user_site(tmp_path):
     result=run("-m", "batchseam", "suite", "--json")
     assert result.returncode == 0, result.stdout + result.stderr
     assert json.loads(result.stdout)["checks"][0]["status"] == "pass"
+
+    # A CI job can supply its own project dependencies through a relative PYTHONPATH.
+    libs = tmp_path / "lib"
+    libs.mkdir()
+    (libs / "job_helper.py").write_text("scale = 3\n")
+    (tmp_path / "calc.py").write_text("from job_helper import scale\nimport polars as pl\nexpr=pl.col('x')*scale\n")
+    env["PYTHONPATH"] = "lib"
+    project = tmp_path / "rules"
+    project.mkdir()
+    (project / "batchseam.toml").write_text((tmp_path / "batchseam.toml").read_text().replace(
+        "calc.py", "../calc.py").replace("values.csv", "../values.csv"))
+    result = run("-m", "batchseam", "suite", "rules/batchseam.toml", "--json")
+    assert result.returncode == 0, result.stdout + result.stderr

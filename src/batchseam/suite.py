@@ -92,8 +92,11 @@ def _run_check(root, name, args):
     try:
         # Start from the same installed package, including user-site installs, before any project code.
         env = {**os.environ, "PYTHONPATH": str(Path(__file__).resolve().parents[1])}
-        result = subprocess.run([sys.executable, "-P", "-m", "batchseam", "check", *args],
-                                cwd=root, env=env, capture_output=True, text=True, errors="replace")
+        runner = ("import json,sys; from batchseam.cli import main; "
+                  "sys.path[:0] = json.load(sys.stdin); raise SystemExit(main())")
+        paths = [os.path.abspath(p) for p in sys.path]
+        result = subprocess.run([sys.executable, "-P", "-c", runner, "check", *args],
+                                cwd=root, env=env, input=json.dumps(paths), capture_output=True, text=True, errors="replace")
     except OSError as err:
         return dict(name=name, status="error", diagnostic=f"Could not start batchseam check: {err}")
 

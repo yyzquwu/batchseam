@@ -194,6 +194,7 @@ def test_receiver_in_long_fluent_pipeline():
 
 def test_optional_import_and_renamed_methods_select_the_actual_callback():
     rows = scan('''
+        p = None
         try:
             import polars as p
             from polars import map_batches as many

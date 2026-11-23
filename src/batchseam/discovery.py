@@ -230,6 +230,8 @@ def _binding(name, scope, pos):
             if len(bindings) > 1 and any(isinstance(b.node, (ast.Import, ast.ImportFrom))
                                          or isinstance(b.value, (ast.Name, ast.Attribute)) for b in bindings):
                 # Optional imports and aliases often fall back to None, which cannot supply a callable.
+                if _literal(bindings[0].value, None):
+                    bindings = bindings[1:]
                 bindings = [b for b in bindings if not b.optional_none]
             if len(bindings) == 1:
                 binding = bindings[0]

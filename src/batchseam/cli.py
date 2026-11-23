@@ -1,6 +1,7 @@
 import argparse
 from contextlib import contextmanager, nullcontext, redirect_stdout
 from importlib import import_module
+from importlib.metadata import version
 import json
 from pathlib import Path
 import runpy
@@ -169,6 +170,7 @@ def main(argv=None):
             if hasattr(stream, "reconfigure"):
                 stream.reconfigure(errors="backslashreplace")
     parser = argparse.ArgumentParser(description="Find Polars transforms that change at batch boundaries.")
+    parser.add_argument("--version", action="version", version=f"batchseam {version('batchseam')}")
     commands = parser.add_subparsers(dest="command", required=True)
     demo = commands.add_parser("demo", help="try a built-in DataFrame, Series, or expression check")
     demo.add_argument("example", nargs="?", choices=_DEMOS, default="running-total")
@@ -184,24 +186,34 @@ def main(argv=None):
     scan.add_argument("path", nargs="?", default=Path("."), type=Path, metavar="PATH")
     suite = commands.add_parser("suite", help="run named project checks from a TOML manifest")
     suite.add_argument("manifest", nargs="?", default=Path("batchseam.toml"), type=Path)
+    suite.add_argument("--save-failures", type=Path, metavar="DIR", help="save reduced failures and a report to a new directory")
+    formats = suite.add_mutually_exclusive_group()
+    formats.add_argument("--json", action="store_true", help="emit all check reports on stdout")
+    formats.add_argument("--markdown", action="store_true", help="write a UTF-8 GitHub Actions summary")
     for command in (demo, check):
         group = command.add_mutually_exclusive_group()
         group.add_argument("--cuts", type=_cuts, help="replay a split at these zero-based offsets")
         group.add_argument("--max-plans", type=int, help="maximum number of candidate splits (default 16)")
         group.add_argument("--exhaustive", action="store_true", help="check every single interior cut until a difference")
         command.add_argument("--save-repro", metavar="DIR", type=Path, help="save a reduced fixture and regression test on failure")
-    for command in (demo, check, replay, scan, suite):
+    for command in (demo, check, replay, scan):
         command.add_argument("--json", action="store_true", help="emit the result as JSON on stdout")
     args = parser.parse_args(argv)
     if args.command == "suite":
         from .suite import run_suite
 
         try:
-            result = run_suite(args.manifest)
+            result = run_suite(args.manifest, save_failures=args.save_failures)
         except (OSError, ValueError) as err:
             parser.exit(2, f"batchseam: {err}\n")
         if args.json:
             print(json.dumps(result, allow_nan=False))
+        elif args.markdown:
+            from .summary import format_suite_markdown
+
+            if argv is None and hasattr(sys.stdout, "reconfigure"):
+                sys.stdout.reconfigure(encoding="utf-8", errors="backslashreplace")
+            print(format_suite_markdown(result), end="")
         else:
             for item in result["checks"]:
                 print(f"{item['status'].upper():12}{item['name']!r}")

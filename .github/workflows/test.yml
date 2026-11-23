@@ -9,6 +9,11 @@ jobs:
       matrix:
         os: [ubuntu-latest, windows-latest]
         python: ["3.11", "3.12"]
+        include:
+          - os: ubuntu-latest
+            python: "3.13"
+          - os: ubuntu-latest
+            python: "3.14"
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -26,7 +31,8 @@ jobs:
           python -m pip install "${wheel[0]}[test]"
           python -I -m pytest -q tests
       - name: Check the example project
-        run: python -I -m batchseam suite examples/batchseam.toml
+        shell: bash
+        run: python -I -m batchseam suite examples/batchseam.toml --markdown >> "$GITHUB_STEP_SUMMARY"
       - name: Try the installed demo outside the checkout
         shell: bash
         run: |

@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "batchseam"
-version = "0.6.0"
+version = "1.0.0"
 description = "Test Polars expressions across batch boundaries and save failures as pytest regressions."
 readme = "README.md"
 license = "MIT"

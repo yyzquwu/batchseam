@@ -87,7 +87,9 @@ def _read_suite(path):
     return commands
 
 
-def _run_check(root, name, args):
+def _run_check(root, name, args, *, artifact=None):
+    if artifact is not None:
+        args = [*args, "--save-repro", str(artifact)]
     try:
         result = subprocess.run([sys.executable, "-I", "-m", "batchseam", "check", *args],
                                 cwd=root, capture_output=True, text=True, errors="replace")
@@ -103,21 +105,43 @@ def _run_check(root, name, args):
             and all(type(report.get(key)) is int and report[key] >= 0 for key in ("input_rows", "checked"))
             and (expected != "fail" or (isinstance(report.get("cuts"), list)
                                         and isinstance(report.get("difference"), dict)))):
-        return dict(name=name, status=expected, report=report)
+        item = dict(name=name, status=expected, report=report)
+        if expected == "fail" and artifact is not None:
+            if not isinstance(report.get("repro"), dict):
+                return dict(name=name, status="error", diagnostic=f"batchseam check did not save a repro to {artifact}")
+            item["artifact"] = artifact.name
+        return item
 
     detail = result.stderr.strip() or result.stdout.strip() or "no output"
     return dict(name=name, status="error",
                 diagnostic=f"batchseam check exited with code {result.returncode} without a valid report: {detail}")
 
 
-def run_suite(path: str | Path) -> dict:
-    """Validate a version 1 TOML manifest, then run its trusted checks in order."""
+def run_suite(path: str | Path, *, save_failures: str | Path | None = None) -> dict:
+    """Validate a version 1 TOML manifest, then run its trusted checks in order.
+
+    When save_failures is set, create a fresh directory under an existing parent.
+    The saved files can contain original input values. A valid summary.json marks
+    a completed run, including runs with check errors.
+    """
     path = Path(path).absolute()
     try:
         commands = _read_suite(path)
     except ValueError as err:
         raise ValueError(f"{path}: {err}") from err
-    checks = [_run_check(path.parent, name, args) for name, args in commands.items()]
+    output = None if save_failures is None else Path(save_failures).absolute()
+    if output is not None:
+        output.mkdir()
+    checks = []
+    for index, (name, args) in enumerate(commands.items(), 1):
+        artifact = None if output is None else output / f"check-{index:04d}"
+        checks.append(_run_check(path.parent, name, args, artifact=artifact))
     outcomes = {check["status"] for check in checks}
     status = next(status for status in ("error", "insufficient", "fail", "pass") if status in outcomes)
-    return dict(version=1, status=status, checks=checks)
+    report = dict(version=1, status=status, checks=checks)
+    if output is not None:
+        staged = output / ".summary.json.tmp"
+        with staged.open("x", encoding="utf-8") as file:
+            file.write(json.dumps(report, indent=2, allow_nan=False) + "\n")
+        staged.replace(output / "summary.json")
+    return report

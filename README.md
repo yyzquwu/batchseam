@@ -17,7 +17,7 @@ python -m pip install ".[test]"
 python -m batchseam demo fx
 ```
 
-For an install from the release tag, run `uvx --python 3.12 --from git+https://github.com/yyzquwu/batchseam.git@v0.6.0 batchseam demo fx`.
+To pin the release in your project's test environment, run `python -m pip install "batchseam==1.0.0"`. For a Git install, use `uvx --python 3.12 --from git+https://github.com/yyzquwu/batchseam.git@v1.0.0 batchseam demo fx`.
 
 Both trades have an amount of 10. Their exchange rates are 1 and 2. The demo callback uses the first rate in each batch. On the whole fixture it converts the second trade to 10. With a cut after the first trade it converts that same trade to 20. The demo exits 1 because the outputs differ.
 
@@ -54,7 +54,18 @@ exhaustive = true
 
 Paths are relative to the manifest. Modes are `expr`, `frame`, and `series`. Series checks also take a `column`. Choose at most one of `cuts`, `max_plans`, and `exhaustive`. Each check runs the project's trusted Python in its own process. Invalid configuration exits 2 before checks run. A valid suite runs every check, even after a failure. Exit 0 means all passed, 1 means a demonstrated mismatch, and 2 means at least one error or insufficient fixture. Use `--json` for every check's report and diagnostic.
 
+### Keep failed CI examples
+
+```sh
+batchseam suite batchseam.toml --save-failures batchseam-results --markdown >> "$GITHUB_STEP_SUMMARY"
+```
+
+The command writes the named outcomes to the job summary and keeps its usual exit status. Each demonstrated failure that saves successfully gets a numbered directory, such as `batchseam-results/check-0001`, containing its Parquet witness and generated pytest test. The complete machine-readable report is `batchseam-results/summary.json`. Choose a new output directory per run.
+
+If you download a bundle from CI, unpack it at the same relative location in a checkout of the project, install its dependencies, and run `python -m pytest -q batchseam-results/check-0001`. The Markdown summary omits raw input and output values. The optional JSON and Parquet artifacts can contain the original data. [Version 1 compatibility contract](https://github.com/yyzquwu/batchseam/blob/v1.0.0/docs/compatibility.md)
+
 ## Find your first check
+
 
 From this checkout, use a Python 3.12 virtual environment.
 

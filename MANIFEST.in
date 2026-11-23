@@ -1,1 +1,2 @@
 include examples/*.csv examples/*.py examples/*.toml
+include docs/compatibility.md

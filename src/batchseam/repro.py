@@ -24,15 +24,11 @@ import sys
 
 def test_batchseam_regression():
     # Start the installed CLI first, then restore this project's pytest import paths.
-    # Bypass cached project bytecode so edits are visible even within a timestamp tick.
     runner = (
-        "import json, sys, tempfile\\n"
+        "import json, sys\\n"
         "from batchseam.cli import main\\n"
         "sys.path[:0] = json.load(sys.stdin)\\n"
-        "with tempfile.TemporaryDirectory() as cache:\\n"
-        "    sys.pycache_prefix = cache\\n"
-        "    sys.dont_write_bytecode = True\\n"
-        "    raise SystemExit(main(['replay', sys.argv[1], '--json']))"
+        "raise SystemExit(main(['replay', sys.argv[1], '--json']))"
     )
     result = subprocess.run(
         [sys.executable, "-P", "-c", runner, str(Path(__file__).resolve().parent)],

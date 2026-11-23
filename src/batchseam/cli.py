@@ -1,15 +1,28 @@
 import argparse
-from contextlib import redirect_stdout
+from contextlib import contextmanager, nullcontext, redirect_stdout
 from importlib import import_module
 import json
 from pathlib import Path
 import runpy
 import sys
+from tempfile import TemporaryDirectory
 
 import polars as pl
 
-from .core import check_batches, check_elementwise, check_expr_elementwise
+from .core import _DEFAULT_MAX_PLANS, check_batches, check_elementwise, check_expr_elementwise
 from .repro import load_repro_case, save_repro
+
+
+@contextmanager
+def _current_source():
+    """Replay edits even when a project module's timestamp and size still match its pyc."""
+    prefix, disabled = sys.pycache_prefix, sys.dont_write_bytecode
+    with TemporaryDirectory() as empty:
+        try:
+            sys.pycache_prefix, sys.dont_write_bytecode = empty, True
+            yield
+        finally:
+            sys.pycache_prefix, sys.dont_write_bytecode = prefix, disabled
 
 
 def _cuts(text):
@@ -172,7 +185,7 @@ def main(argv=None):
     for command in (demo, check):
         group = command.add_mutually_exclusive_group()
         group.add_argument("--cuts", type=_cuts, help="replay a split at these zero-based offsets")
-        group.add_argument("--max-plans", type=int, default=16, help="maximum number of candidate splits (default 16)")
+        group.add_argument("--max-plans", type=int, help="maximum number of candidate splits (default 16)")
         group.add_argument("--exhaustive", action="store_true", help="check every single interior cut until a difference")
         command.add_argument("--save-repro", metavar="DIR", type=Path, help="save a reduced fixture and regression test on failure")
     for command in (demo, check, replay, scan):
@@ -184,7 +197,7 @@ def main(argv=None):
         return scan_report(args.path, as_json=args.json)
     original_path = sys.path[:]
     try:
-        with redirect_stdout(sys.stderr):
+        with redirect_stdout(sys.stderr), (_current_source() if args.command == "replay" else nullcontext()):
             if args.command == "replay":
                 fixture_label = str(args.directory / "fixture.parquet")
                 spec, frame, cuts, series, expr = load_repro_case(args.directory)
@@ -210,7 +223,8 @@ def main(argv=None):
                         if series not in frame.columns:
                             raise ValueError(f"Series column {series!r} was not found in the input")
                         frame = frame.get_column(series).to_frame()
-                report = _check(transform, frame, series, expr, cuts=args.cuts, max_plans=args.max_plans,
+                budget = _DEFAULT_MAX_PLANS if args.max_plans is None else args.max_plans
+                report = _check(transform, frame, series, expr, cuts=args.cuts, max_plans=budget,
                                 exhaustive=args.exhaustive)
                 if args.save_repro is not None and report["status"] == "fail":
                     report["repro"] = save_repro(transform, frame, report, args.save_repro,

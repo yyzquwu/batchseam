@@ -182,15 +182,35 @@ def main(argv=None):
     replay.add_argument("directory", metavar="DIR", type=Path)
     scan = commands.add_parser("scan", help="find batch claims in Python source without running it")
     scan.add_argument("path", nargs="?", default=Path("."), type=Path, metavar="PATH")
+    suite = commands.add_parser("suite", help="run named project checks from a TOML manifest")
+    suite.add_argument("manifest", nargs="?", default=Path("batchseam.toml"), type=Path)
     for command in (demo, check):
         group = command.add_mutually_exclusive_group()
         group.add_argument("--cuts", type=_cuts, help="replay a split at these zero-based offsets")
         group.add_argument("--max-plans", type=int, help="maximum number of candidate splits (default 16)")
         group.add_argument("--exhaustive", action="store_true", help="check every single interior cut until a difference")
         command.add_argument("--save-repro", metavar="DIR", type=Path, help="save a reduced fixture and regression test on failure")
-    for command in (demo, check, replay, scan):
+    for command in (demo, check, replay, scan, suite):
         command.add_argument("--json", action="store_true", help="emit the result as JSON on stdout")
     args = parser.parse_args(argv)
+    if args.command == "suite":
+        from .suite import run_suite
+
+        try:
+            result = run_suite(args.manifest)
+        except (OSError, ValueError) as err:
+            parser.exit(2, f"batchseam: {err}\n")
+        if args.json:
+            print(json.dumps(result, allow_nan=False))
+        else:
+            for item in result["checks"]:
+                print(f"{item['status'].upper():12}{item['name']!r}")
+                if "diagnostic" in item:
+                    print(item["diagnostic"])
+                elif item["status"] == "fail":
+                    print("  " + json.dumps(item["report"]["difference"], ensure_ascii=False))
+            print(f"Suite {result['status'].upper()} | {len(result['checks'])} checks")
+        return {"pass": 0, "fail": 1, "insufficient": 2, "error": 2}[result["status"]]
     if args.command == "scan":
         from .scan_cli import scan_report
 

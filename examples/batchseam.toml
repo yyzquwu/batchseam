@@ -1,0 +1,14 @@
+version = 1
+
+[[checks]]
+name = "trade conversion"
+target = "fx.py:usd_fixed"
+fixture = "trades.csv"
+mode = "expr"
+exhaustive = true
+
+[[checks]]
+name = "amount in cents"
+target = "transforms.py:cents"
+fixture = "amounts.csv"
+mode = "frame"

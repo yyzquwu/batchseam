@@ -1,1 +1,1 @@
-include examples/*.csv examples/*.py
+include examples/*.csv examples/*.py examples/*.toml

@@ -17,7 +17,7 @@ python -m pip install ".[test]"
 python -m batchseam demo fx
 ```
 
-For an install from the release tag, run `uvx --python 3.12 --from git+https://github.com/yyzquwu/batchseam.git@v0.5.0 batchseam demo fx`.
+For an install from the release tag, run `uvx --python 3.12 --from git+https://github.com/yyzquwu/batchseam.git@v0.6.0 batchseam demo fx`.
 
 Both trades have an amount of 10. Their exchange rates are 1 and 2. The demo callback uses the first rate in each batch. On the whole fixture it converts the second trade to 10. With a cut after the first trade it converts that same trade to 20. The demo exits 1 because the outputs differ.
 
@@ -36,6 +36,23 @@ def test_trade_conversion():
 Use this assertion for a deterministic expression expected to produce **one column and one value per input row**. Batchseam evaluates the expression with Polars on the fixture and on each slice, checks lengths, then compares ordered values and dtype. A pass covers the fixture and splits tried. Polars chooses its own internal execution schedule.
 
 To save the failing exchange-rate example, run `batchseam demo fx --save-repro fx-repro`, then `batchseam replay fx-repro`. For your own expression, use `batchseam check pipeline.py:to_usd trades.parquet --expr --save-repro fx-regression`. The target can be a module-level expression or a zero-argument factory that constructs it. Run `python -m pytest -q fx-regression` after correcting the source. The bundle contains real fixture rows, so choose the input you want to keep.
+
+## Run project checks in CI
+
+Keep a small fixture and its named checks in version control. Run `batchseam suite examples/batchseam.toml` to check the corrected trade expression and a DataFrame transform. From a project with a `batchseam.toml` in its root, `batchseam suite` finds it automatically.
+
+```toml
+version = 1
+
+[[checks]]
+name = "trade conversion"
+target = "fx.py:usd_fixed"
+fixture = "trades.csv"
+mode = "expr"
+exhaustive = true
+```
+
+Paths are relative to the manifest. Modes are `expr`, `frame`, and `series`. Series checks also take a `column`. Choose at most one of `cuts`, `max_plans`, and `exhaustive`. Each check runs the project's trusted Python in its own process. Invalid configuration exits 2 before checks run. A valid suite runs every check, even after a failure. Exit 0 means all passed, 1 means a demonstrated mismatch, and 2 means at least one error or insufficient fixture. Use `--json` for every check's report and diagnostic.
 
 ## Find your first check
 

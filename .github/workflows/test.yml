@@ -25,6 +25,8 @@ jobs:
           wheel=(dist/*.whl)
           python -m pip install "${wheel[0]}[test]"
           python -I -m pytest -q tests
+      - name: Check the example project
+        run: python -I -m batchseam suite examples/batchseam.toml
       - name: Try the installed demo outside the checkout
         shell: bash
         run: |

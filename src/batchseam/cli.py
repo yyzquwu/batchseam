@@ -223,7 +223,8 @@ def main(argv=None):
                     print(item["diagnostic"])
                 elif item["status"] == "fail":
                     print("  " + json.dumps(item["report"]["difference"], ensure_ascii=False))
-            print(f"Suite {result['status'].upper()} | {len(result['checks'])} checks")
+            count = len(result["checks"])
+            print(f"Suite {result['status'].upper()} | {count} {'check' if count == 1 else 'checks'}")
         return {"pass": 0, "fail": 1, "insufficient": 2, "error": 2}[result["status"]]
     if args.command == "scan":
         from .scan_cli import scan_report

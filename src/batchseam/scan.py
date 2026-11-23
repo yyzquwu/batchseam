@@ -109,7 +109,7 @@ def scan_tree(path: Path | str) -> dict:
     while pending:
         entry = pending.pop()
         name = entry.name.casefold()
-        if name in _SKIP_DIRS or name.endswith((".egg-info", ".dist-info")):
+        if entry != target and (name in _SKIP_DIRS or name.endswith((".egg-info", ".dist-info"))):
             continue
         try:
             info = target_info if entry == target else entry.lstat()
@@ -119,10 +119,14 @@ def scan_tree(path: Path | str) -> dict:
                 children = list(entry.iterdir())
                 if all(child.name.casefold() != "pyvenv.cfg" for child in children):
                     pending.extend(children)
-            elif stat.S_ISREG(info.st_mode) and entry.suffix.casefold() == ".py" and not _REPRO_TEST.fullmatch(name):
+                elif entry == target:
+                    error(entry, ValueError("The scan root is a virtual environment. Select your project directory."))
+            elif stat.S_ISREG(info.st_mode) and entry.suffix.casefold() == ".py":
+                if entry != target and _REPRO_TEST.fullmatch(name):
+                    continue
                 report["files_scanned"] += 1
                 source = _read_source(entry)
-                if _generated(entry, source):
+                if entry != target and _generated(entry, source):
                     report["files_scanned"] -= 1
                 else:
                     findings.extend(discover(source, entry.relative_to(root).as_posix()))

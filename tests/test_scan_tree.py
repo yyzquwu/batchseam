@@ -47,7 +47,18 @@ def test_scan_skips_environments_dependencies_build_caches_and_vcs(tmp_path):
     assert report["errors"] == []
     assert [row["path"] for row in report["findings"]] == ["project.py/test_batchseam.py"]
     assert scan_tree(tmp_path / "renamed-env")["files_scanned"] == 0
+    assert "virtual environment" in scan_tree(tmp_path / "renamed-env")["errors"][0]["message"]
     assert scan_tree(tmp_path / "project.py")["root"] == str(tmp_path / "project.py")
+
+
+def test_explicit_scan_root_overrides_folder_names_and_generation_markers(tmp_path):
+    root = tmp_path / "build"
+    _write(root / "app.py")
+    generated = _write(root / "generated.py", "# @generated\n" + SOURCE)
+    _write(root / "vendor" / "lib.py")
+    assert scan_tree(tmp_path)["files_scanned"] == 0
+    assert [row["path"] for row in scan_tree(root)["findings"]] == ["app.py"]
+    assert [row["path"] for row in scan_tree(generated)["findings"]] == ["generated.py"]
 
 
 def test_scan_skips_generated_source_and_old_and_new_repro_tests(tmp_path):

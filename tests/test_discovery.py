@@ -288,3 +288,22 @@ def test_guarded_import_and_positional_column_variable_in_class():
     ''')
     assert [(r["callback"], r["mode"], r["confidence"]) for r in rows] == [
         ("add", "multi", "ambiguous"), ("add", "multi", "polars"), ("<unknown>", "unknown", "ambiguous")]
+
+
+def test_local_column_list_and_unpacked_args_keep_distinct_signatures():
+    rows = scan('''
+        import polars as pl
+        receiver = pl
+        def normalize(s): return s + 1
+        def add(parts): return parts[0] + parts[1]
+        class Example:
+            if use_expr:
+                receiver = pl.col("x")
+            else:
+                cols = ["x", "y"]
+                result = receiver.map_batches(cols, add, is_elementwise=True)
+        def single(expr: pl.Expr, *args):
+            return expr.map_batches(normalize, *args, return_dtype=pl.Int64, is_elementwise=True)
+    ''')
+    assert [(r["callback"], r["mode"], r["confidence"], r["target"]) for r in rows] == [
+        ("add", "multi", "ambiguous", None), ("normalize", "series", "polars", None)]

@@ -69,7 +69,7 @@ class _Scan(ast.NodeVisitor):
                 self.nonlocal_writes.append((self.scope.parent, name))
             return
         keep = (not self.conditional or isinstance(node, (ast.Import, ast.ImportFrom))
-                or isinstance(value, (ast.Name, ast.Attribute)))
+                or isinstance(value, (ast.Name, ast.Attribute, ast.List, ast.Tuple)))
         # A conditional class assignment can mask an enclosing name only on its executed path.
         class_conditional = self.conditional and self.scope.kind == "class"
         if class_conditional and self.suite is None:
@@ -328,13 +328,17 @@ def _symbol(expr, scope, pos):
     return None
 
 
-def _callback(call, index):
-    kw = [item.value for item in call.keywords if item.arg == "function"]
+def _known_positional(call):
     positional = []
     for arg in call.args:
         if isinstance(arg, ast.Starred):
             break
         positional.append(arg)
+    return positional
+
+
+def _callback(call, positional, index):
+    kw = [item.value for item in call.keywords if item.arg == "function"]
     if len(positional) > index:
         return positional[index] if not kw else None
     return kw[0] if len(kw) == 1 else None
@@ -398,12 +402,13 @@ def discover(source: str, path: str) -> list[dict]:
         else:
             continue
         confirmed = mode != "unknown"
+        positional = _known_positional(call)
         keywords = {kw.arg for kw in call.keywords}
-        if mode != "multi" and ("exprs" in keywords or len(call.args) >= 2
-                               and ("return_dtype" in keywords or _sequence(call.args[0], scope, pos))):
+        if mode != "multi" and ("exprs" in keywords or len(positional) >= 2
+                               and ("return_dtype" in keywords or _sequence(positional[0], scope, pos))):
             mode, index, confirmed = "multi", 1, False
         # With an unresolved receiver, two positional arguments can also mean (function, dtype).
-        callback = None if mode == "unknown" and len(call.args) >= 2 else _callback(call, index)
+        callback = None if mode == "unknown" and len(positional) >= 2 else _callback(call, positional, index)
         kind = {ast.Name: "named", ast.Lambda: "lambda", ast.Attribute: "bound"}.get(type(callback), "other")
         if isinstance(callback, ast.Attribute):
             owner = _symbol(callback.value, scope, pos)

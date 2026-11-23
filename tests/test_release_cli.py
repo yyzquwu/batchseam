@@ -32,3 +32,32 @@ def test_ci_artifact_flow_and_utf8_markdown(tmp_path):
     with (tmp_path/"fx.py").open("a",encoding="utf-8") as f:
         f.write("\nusd = usd_fixed\n")
     assert invoke("replay",bundle,cwd=tmp_path).returncode==0
+
+
+def test_nested_manifest_replay_and_short_series_witness_after_move(tmp_path):
+    project = tmp_path / "original"
+    rules = project / "rules"
+    rules.mkdir(parents=True)
+    (rules / "scale.txt").write_text("2")
+    (rules / "data.csv").write_text("x\n1\n2\n")
+    (rules / "one.csv").write_text("x\n-1\n")
+    source = rules / "targets.py"
+    source.write_text("from pathlib import Path\nimport polars as pl\n"
+                      "k=int(Path('scale.txt').read_text())\n"
+                      "expr = pl.col('x').cum_sum()*k\n"
+                      "def positive(s): return s.filter(s>0)\n")
+    manifest = ('version=1\n[[checks]]\nname="nested"\nmode="expr"\ntarget="targets.py:expr"\nfixture="data.csv"\n'
+                '[[checks]]\nname="single"\nmode="series"\ntarget="targets.py:positive"\nfixture="one.csv"\ncolumn="x"\n')
+    (rules / "batchseam.toml").write_text(manifest)
+    result = invoke("suite", "rules/batchseam.toml", "--save-failures", "out", cwd=project)
+    assert result.returncode == 1, result.stdout + result.stderr
+    moved = project.rename(tmp_path / "moved")
+    for ordinal in ("0001", "0002"):
+        assert invoke("replay", f"out/check-{ordinal}", "--json", cwd=moved).returncode == 1
+    source = moved / "rules/targets.py"
+    source.write_text(source.read_text().replace(".cum_sum()", "").replace(".filter(s>0)", ""))
+    short = invoke("replay", "out/check-0002", "--json", cwd=moved)
+    assert short.returncode == 2 and json.loads(short.stdout)["status"] == "insufficient"
+    tests = subprocess.run([sys.executable, "-I", "-m", "pytest", "-q", "out"], cwd=moved,
+                           capture_output=True, timeout=90)
+    assert tests.returncode == 0 and b"2 passed" in tests.stdout, tests.stdout + tests.stderr

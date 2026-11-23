@@ -1,5 +1,5 @@
 import argparse
-from contextlib import contextmanager, nullcontext, redirect_stdout
+from contextlib import chdir, contextmanager, nullcontext, redirect_stdout
 from importlib import import_module
 from importlib.metadata import version
 import json
@@ -11,7 +11,7 @@ from tempfile import TemporaryDirectory
 import polars as pl
 
 from .core import _DEFAULT_MAX_PLANS, check_batches, check_elementwise, check_expr_elementwise
-from .repro import load_repro_case, save_repro
+from .repro import _load_repro_case, save_repro
 
 
 @contextmanager
@@ -234,12 +234,13 @@ def main(argv=None):
         with redirect_stdout(sys.stderr), (_current_source() if args.command in ("check", "replay") else nullcontext()):
             if args.command == "replay":
                 fixture_label = str(args.directory / "fixture.parquet")
-                spec, frame, cuts, series, expr = load_repro_case(args.directory)
-                if spec.startswith("demo:"):
-                    transform = _DEMOS[spec.removeprefix("demo:")][0]
-                else:
-                    transform, _ = _load_transform(spec, expr=expr)
-                report = _check(transform, frame, series, expr, cuts=cuts or None)
+                spec, frame, cuts, series, expr, workdir = _load_repro_case(args.directory, allow_expr=True)
+                with chdir(workdir) if workdir is not None else nullcontext():
+                    if spec.startswith("demo:"):
+                        transform = _DEMOS[spec.removeprefix("demo:")][0]
+                    else:
+                        transform, _ = _load_transform(spec, expr=expr)
+                    report = _check(transform, frame, series, expr, cuts=cuts or None)
             else:
                 if args.command == "demo":
                     spec = f"demo:{args.example}"
@@ -262,7 +263,8 @@ def main(argv=None):
                                 exhaustive=args.exhaustive)
                 if args.save_repro is not None and report["status"] == "fail":
                     report["repro"] = save_repro(transform, frame, report, args.save_repro,
-                                                 spec=spec, series=series, expr=expr)
+                                                 spec=spec, series=series, expr=expr,
+                                                 workdir=Path.cwd() if args.command == "check" else None)
     except Exception as err:
         parser.exit(2, f"batchseam: {err}\n")
     finally:

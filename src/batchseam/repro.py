@@ -51,6 +51,13 @@ def _file_spec(spec):
     return Path(filename), name
 
 
+def _bundle_path(path, dest):
+    try:
+        return Path(relpath(path, dest.resolve())).as_posix()
+    except ValueError:  # Windows paths on different drives have no relative path.
+        return str(path)
+
+
 def _saved_spec(spec, dest, *, expr):
     if spec in (_EXPR_DEMOS if expr else _DEMOS):
         return spec
@@ -59,11 +66,7 @@ def _saved_spec(spec, dest, *, expr):
         raise ValueError("Saving a repro requires an absolute transform path")
     if expr and not source.is_file():
         raise ValueError(f"Saving an expression repro requires an existing source file: {source}")
-    try:
-        source = Path(relpath(source, dest.resolve())).as_posix()
-    except ValueError:  # Windows paths on different drives have no relative path.
-        source = str(source)
-    return f"{source}:{name}"
+    return f"{_bundle_path(source, dest)}:{name}"
 
 
 def _signature(report):
@@ -120,7 +123,7 @@ def _reduce(run_check, frame, report):
     return frame, report
 
 
-def save_repro(transform, frame, report, dest, *, spec, series=None, expr=False) -> dict:
+def save_repro(transform, frame, report, dest, *, spec, series=None, expr=False, workdir=None) -> dict:
     """Reduce a failure and verify its Parquet fixture.
 
     For expr=True, pass a Polars Expr and a source reference that can rebuild it.
@@ -181,8 +184,11 @@ def save_repro(transform, frame, report, dest, *, spec, series=None, expr=False)
             meta.update(version=_SERIES_VERSION, mode="series", series=series)
         elif expr:
             meta.update(version=_EXPR_VERSION, mode="expr")
-        # A shorter expression fixture can test output length but has no interior split.
-        expected = (2, "insufficient") if expr and fixture.height < 2 else (0, "pass")
+        if workdir is not None:
+            meta["working_directory"] = _bundle_path(Path(workdir).resolve(), dest)
+        # A short elementwise witness tests output length but has no interior split.
+        short = (expr or series is not None) and fixture.height < 2
+        expected = (2, "insufficient") if short else (0, "pass")
         # Pytest imports test files by basename in its default collection mode.
         with create(f"test_batchseam_{uuid4().hex}.py") as file:
             file.write(f"{_TEST}\n_EXPECTED = {expected!r}\n".encode("utf-8"))
@@ -202,13 +208,12 @@ def load_repro(dest) -> tuple[str, pl.DataFrame, list[int]]:
 
 def load_repro_config(dest) -> tuple[str, pl.DataFrame, list[int], str | None]:
     """Load a frame or Series bundle, resolving its source reference."""
-    spec, fixture, cuts, series, _ = _load_repro_case(dest, allow_expr=False)
-    return spec, fixture, cuts, series
+    return _load_repro_case(dest, allow_expr=False)[:4]
 
 
 def load_repro_case(dest) -> tuple[str, pl.DataFrame, list[int], str | None, bool]:
     """Return (spec, fixture, cuts, series, expr), resolving spec relative to the bundle."""
-    return _load_repro_case(dest, allow_expr=True)
+    return _load_repro_case(dest, allow_expr=True)[:5]
 
 
 def _load_repro_case(dest, *, allow_expr):
@@ -258,7 +263,12 @@ def _load_repro_case(dest, *, allow_expr):
             whole_failure = _validate_length(diff, cuts, rows, mode)
     if not cuts and not whole_failure:
         raise ValueError("Repro cuts must be strictly increasing interior offsets")
-    return spec, fixture, cuts, series, expr
+    workdir = meta.get("working_directory")
+    if workdir is not None:
+        if not isinstance(workdir, str) or not workdir:
+            raise ValueError("Invalid working_directory in repro.json")
+        workdir = (dest / workdir).resolve()
+    return spec, fixture, cuts, series, expr, workdir
 
 
 def _validate_length(diff, cuts, rows, mode):

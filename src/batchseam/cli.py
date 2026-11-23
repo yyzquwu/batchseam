@@ -206,7 +206,7 @@ def main(argv=None):
             print(json.dumps(result, allow_nan=False))
         else:
             for item in result["checks"]:
-                print(f"{item['status'].upper():12}{item['name']!r}")
+                print(f"{item['status'].upper():12} {item['name']!r}")
                 if "diagnostic" in item:
                     print(item["diagnostic"])
                 elif item["status"] == "fail":

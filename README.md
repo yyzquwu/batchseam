@@ -10,7 +10,7 @@ Try the packaged demo from any directory:
 uvx --python 3.12 batchseam demo fx
 ```
 
-For tests and development from this checkout, use a Python 3.12 virtual environment:
+To use the assertions in an existing Python 3.12 environment, run `python -m pip install batchseam`. For tests and development from this checkout:
 
 ```sh
 python -m pip install ".[test]"

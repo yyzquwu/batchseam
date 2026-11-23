@@ -241,7 +241,8 @@ def check_expr_elementwise(expr: pl.Expr, frame: pl.DataFrame, *,
         raise TypeError("frame must be a Polars DataFrame")
 
     def select(batch):
-        out = batch.select(expr)
+        # Stored row groups must not supply different batch boundaries to the baseline.
+        out = batch.rechunk().select(expr)
         if out.width != 1:
             raise ValueError(f"expression must select exactly one output column (got {out.width})")
         return out

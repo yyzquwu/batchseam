@@ -65,6 +65,8 @@ def _load_transform(spec, *, expr=False):
                 raise ValueError(f"Expression factory {name!r} must return a Polars Expr")
         elif not isinstance(transform, pl.Expr):
             raise ValueError(f"Expected a Polars Expr or zero-argument factory named {name!r} in {script.name}")
+    elif isinstance(transform, pl.Expr):
+        raise ValueError(f"{name!r} is a Polars expression. Use --expr to check it.")
     elif not callable(transform):
         raise ValueError(f"Could not find callable {name!r} in {script.name}")
     return transform, f"{script}:{name}"

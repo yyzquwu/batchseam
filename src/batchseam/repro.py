@@ -1,4 +1,4 @@
-"""Save a reduced, verified fixture for a failing batch split."""
+"""Save a reduced, verified fixture for a failing batch check."""
 
 from contextlib import ExitStack
 import json
@@ -9,11 +9,12 @@ from uuid import uuid4
 import polars as pl
 from polars.testing import assert_frame_equal
 
+from . import check_elementwise
 from .core import check_batches
 
-_DEMOS = {"demo:sensor", "demo:running-total"}
+_DEMOS = {"demo:sensor", "demo:running-total", "demo:dates", "demo:center", "demo:positive"}
 _MAX_ATTEMPTS = 128
-_VERSION = 1
+_FRAME_VERSION, _SERIES_VERSION = 1, 2
 _TEST = '''import json
 from pathlib import Path
 import os
@@ -72,12 +73,15 @@ def _signature(report):
         return kind, diff["error"]
     if kind == "row_count":
         return kind, diff["whole"] > diff["batched"]
+    if kind == "length":
+        return kind, diff["scope"], diff["actual"] > diff["expected"]
     return kind, diff["whole"], diff["batched"]
 
 
-def _reduce(transform, frame, report):
+def _reduce(run_check, frame, report):
     # Try progressively finer contiguous deletions within a fixed candidate budget.
     signature = _signature(report)
+    whole_failure = not report["cuts"]
     groups, attempts = 2, 0
     while frame.height > 2:
         rows = frame.height
@@ -93,12 +97,12 @@ def _reduce(transform, frame, report):
             # Drop edges and duplicate offsets from batches with no remaining rows.
             size = rows - (end - start)
             cuts = list(dict.fromkeys(cut for cut in map(remap, report["cuts"]) if 0 < cut < size))
-            if not cuts:
+            if size < 2 or (not cuts and not whole_failure):
                 continue
             span = list(map(remap, report["difference"].get("input_span", [])))
             candidate = pl.concat([frame.slice(0, start), frame.slice(end)])
             try:
-                check = check_batches(transform, candidate, cuts=cuts)
+                check = run_check(candidate, cuts)
             except Exception:
                 continue
             if _signature(check) == signature and check["difference"].get("input_span", []) == span:
@@ -112,8 +116,8 @@ def _reduce(transform, frame, report):
     return frame, report
 
 
-def save_repro(transform, frame, report, dest, *, spec) -> dict:
-    """Reduce a failing split and verify a new bundle against the saved Parquet file."""
+def save_repro(transform, frame, report, dest, *, spec, series=None) -> dict:
+    """Reduce a failure and verify the Parquet fixture, saving only the selected Series column."""
     if report["status"] != "fail" or report["input_rows"] != frame.height:
         raise ValueError("Saving a repro requires a failing report for this fixture")
     dest = Path(dest).absolute()
@@ -122,10 +126,20 @@ def save_repro(transform, frame, report, dest, *, spec) -> dict:
         raise FileExistsError(f"Repro destination already exists: {dest}")
     if not dest.parent.is_dir():
         raise NotADirectoryError(f"Choose an existing parent directory for the repro: {dest.parent}")
-    original = check_batches(transform, frame, cuts=report["cuts"])
-    if original.get("difference") != report["difference"]:
+    if series is not None:
+        if not isinstance(series, str) or series not in frame.columns:
+            raise ValueError("Choose a Series column from the input fixture")
+        frame = frame.get_column(series).to_frame()
+
+    def run_check(fixture, cuts):
+        if series is None:
+            return check_batches(transform, fixture, cuts=cuts)
+        return check_elementwise(transform, fixture.get_column(series), cuts=cuts or None)
+
+    original = run_check(frame, report["cuts"])
+    if original.get("cuts") != report["cuts"] or original.get("difference") != report["difference"]:
         raise ValueError("The original split did not reproduce the reported failure")
-    reduced, check = _reduce(transform, frame, original)
+    reduced, check = _reduce(run_check, frame, original)
 
     with ExitStack() as cleanup:
         dest.mkdir()  # Only one writer can claim this directory.
@@ -144,12 +158,14 @@ def save_repro(transform, frame, report, dest, *, spec) -> dict:
             assert_frame_equal(reduced, fixture, check_exact=True)
         except AssertionError as err:
             raise ValueError("Parquet round trip changed the reduced fixture") from err
-        verified = check_batches(transform, fixture, cuts=check["cuts"])
+        verified = run_check(fixture, check["cuts"])
         if verified != check:
             raise ValueError("The saved fixture did not reproduce the reduced failure")
-        meta = dict(version=_VERSION, transform=ref, original_input_rows=frame.height,
+        meta = dict(version=_FRAME_VERSION, transform=ref, original_input_rows=frame.height,
                     original_cuts=original["cuts"], input_rows=fixture.height,
                     cuts=verified["cuts"], difference=verified["difference"])
+        if series is not None:
+            meta.update(version=_SERIES_VERSION, mode="series", series=series)
         # Pytest imports test files by basename in its default collection mode.
         with create(f"test_batchseam_{uuid4().hex}.py") as file:
             file.write(_TEST.encode("utf-8"))
@@ -160,15 +176,29 @@ def save_repro(transform, frame, report, dest, *, spec) -> dict:
 
 
 def load_repro(dest) -> tuple[str, pl.DataFrame, list[int]]:
-    """Load the fixture and split, resolving user transforms from the bundle directory."""
+    """Load the fixture and cuts using the legacy three-item return value."""
+    spec, fixture, cuts, _ = load_repro_config(dest)
+    return spec, fixture, cuts
+
+
+def load_repro_config(dest) -> tuple[str, pl.DataFrame, list[int], str | None]:
+    """Load a bundle, resolving user transforms relative to it and identifying Series inputs."""
     dest = Path(dest).resolve()
     manifest = dest / "repro.json"
     try:
         meta = json.loads(manifest.read_text(encoding="utf-8"))
     except (UnicodeDecodeError, json.JSONDecodeError) as err:
         raise ValueError(f"Invalid repro manifest {manifest}: {err}") from err
-    if not isinstance(meta, dict) or type(meta.get("version")) is not int or meta["version"] != _VERSION:
+    if (not isinstance(meta, dict) or type(meta.get("version")) is not int
+            or meta["version"] not in (_FRAME_VERSION, _SERIES_VERSION)):
         raise ValueError("Unsupported repro bundle version")
+    series = None
+    if meta["version"] == _SERIES_VERSION:
+        series = meta.get("series")
+        if meta.get("mode") != "series" or not isinstance(series, str):
+            raise ValueError("Invalid Series mode or column in repro.json")
+    elif "mode" in meta or "series" in meta:
+        raise ValueError("Frame repro bundles cannot specify a mode or Series column")
     spec, cuts, rows = meta.get("transform"), meta.get("cuts"), meta.get("input_rows")
     if not isinstance(spec, str):
         raise ValueError("Invalid transform reference in repro.json")
@@ -178,7 +208,32 @@ def load_repro(dest) -> tuple[str, pl.DataFrame, list[int]]:
     fixture = pl.read_parquet(dest / "fixture.parquet")
     if type(rows) is not int or rows != fixture.height:
         raise ValueError("Repro input row count does not match fixture.parquet")
-    if (not isinstance(cuts, list) or not cuts or any(type(c) is not int or not 0 < c < rows for c in cuts)
+    if (not isinstance(cuts, list) or any(type(c) is not int or not 0 < c < rows for c in cuts)
             or any(a >= b for a, b in zip(cuts, cuts[1:]))):
         raise ValueError("Repro cuts must be strictly increasing interior offsets")
-    return spec, fixture, cuts
+    whole_failure = False
+    if series is not None:
+        if fixture.columns != [series]:
+            raise ValueError("Repro Series column does not match fixture.parquet")
+        diff = meta.get("difference")
+        if not isinstance(diff, dict) or diff.get("kind") not in ("length", "value", "schema", "batch_error"):
+            raise ValueError("Invalid Series difference in repro.json")
+        if diff["kind"] == "length":
+            whole_failure = _validate_length(diff, cuts, rows)
+    if not cuts and not whole_failure:
+        raise ValueError("Repro cuts must be strictly increasing interior offsets")
+    return spec, fixture, cuts, series
+
+
+def _validate_length(diff, cuts, rows):
+    scope, expected, actual = diff.get("scope"), diff.get("expected"), diff.get("actual")
+    if type(expected) is not int or type(actual) is not int or actual < 0 or actual == expected:
+        raise ValueError("Invalid Series length difference in repro.json")
+    if scope == "whole" and not cuts and "input_span" not in diff and expected == rows:
+        return True
+    if scope == "batch" and cuts:
+        span = diff.get("input_span")
+        for start, end in zip((0, *cuts), (*cuts, rows)):
+            if span == [start, end] and all(type(offset) is int for offset in span) and expected == end - start:
+                return False
+    raise ValueError("Series length difference does not match the repro cuts and input rows")

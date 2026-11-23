@@ -8,8 +8,8 @@ import sys
 
 import polars as pl
 
-from .core import check_batches
-from .repro import load_repro, save_repro
+from .core import check_batches, check_elementwise
+from .repro import load_repro_config, save_repro
 
 
 def _cuts(text):
@@ -61,27 +61,66 @@ def _sensor(df):
     return df.with_columns(pl.col("reading").forward_fill())
 
 
-_DEMOS = {"running-total": _running_total, "sensor": _sensor}
+def _dates(series):
+    return series.str.to_date("%Y-%m-%d")
 
 
-def _print_report(report):
+def _center(series):
+    return series - series.mean()
+
+
+def _positive(series):
+    return series.filter(series > 0)
+
+
+_DEMOS = {
+    "running-total": (_running_total, None, {"amount": [8, 3, 4, -2]}),
+    "sensor": (_sensor, None, {"reading": [*range(41), None, *range(42, 100)]}),
+    "dates": (_dates, "date", {"date": ["2026-11-20", None, "2026-11-22"]}),
+    "center": (_center, "amount", {"amount": [10, 30]}),
+    "positive": (_positive, "amount", {"amount": [-1, 2, 3]}),
+}
+
+
+def _check(transform, frame, series, **options):
+    if series is None:
+        return check_batches(transform, frame, **options)
+    return check_elementwise(transform, frame.get_column(series), **options)
+
+
+def _print_report(report, series):
     plans = "plan" if report["checked"] == 1 else "plans"
     print(f"{report['status'].upper()}  |  {report['input_rows']} input rows  |  {report['checked']} split {plans} checked")
+    if "coverage" in report:
+        coverage = report["coverage"]
+        print(f"Fixture: {coverage['fixture']}  |  column {series!r}")
+        if "plans" in coverage:
+            print("Tested splits:", json.dumps(coverage["plans"]))
+        else:
+            first, last = coverage["single_cut_range"]
+            print(f"Tested every single cut from {first} through {last}.")
     if report["status"] == "insufficient":
         print("At least two rows are needed to split the input.")
     if report["status"] != "fail":
         return
     diff = report["difference"]
-    print("Replay this split with --cuts", ",".join(map(str, report["cuts"])))
+    if report["cuts"]:
+        print("Replay this split with --cuts", ",".join(map(str, report["cuts"])))
     if diff["kind"] == "value":
         print(f"First difference at output row {diff['output_row']} (zero-based), column {diff['column']!r}")
     elif diff["kind"] == "row_count":
         print("Different output row counts")
+    elif diff["kind"] == "length":
+        scope = "Whole Series"
+        if diff["scope"] == "batch":
+            start, end = diff["input_span"]
+            scope = f"Batch on input rows [{start}, {end})"
+        print(f"{scope} length mismatch (expected {diff['expected']}, actual {diff['actual']})")
     else:
         start, end = diff["input_span"]
         print(f"{diff['kind']} on input rows [{start}, {end})")
     if "whole" in diff:
-        print("Whole frame:", json.dumps(diff["whole"]))
+        print("Whole frame:" if series is None else "Whole Series:", json.dumps(diff["whole"]))
         print("Batched:    ", json.dumps(diff["batched"]))
     if "error" in diff:
         print(diff["error"])
@@ -94,11 +133,12 @@ def main(argv=None):
                 stream.reconfigure(errors="backslashreplace")
     parser = argparse.ArgumentParser(description="Find Polars transforms that change at batch boundaries.")
     commands = parser.add_subparsers(dest="command", required=True)
-    demo = commands.add_parser("demo", help="try a transform that changes at a batch boundary")
+    demo = commands.add_parser("demo", help="try a built-in DataFrame or Series transform")
     demo.add_argument("example", nargs="?", choices=_DEMOS, default="running-total")
-    check = commands.add_parser("check", help="test a local DataFrame transform against a CSV or Parquet fixture")
+    check = commands.add_parser("check", help="test a local transform against a CSV or Parquet fixture")
     check.add_argument("transform", metavar="FILE.py:FUNCTION")
     check.add_argument("input", type=Path)
+    check.add_argument("--series", metavar="COLUMN", help="check a Series callback on this input column")
     replay = commands.add_parser("replay", help="check the transform and split from a saved repro")
     replay.add_argument("directory", metavar="DIR", type=Path)
     for command in (demo, check):
@@ -114,36 +154,42 @@ def main(argv=None):
     try:
         with redirect_stdout(sys.stderr):
             if args.command == "replay":
-                spec, frame, cuts = load_repro(args.directory)
+                fixture_label = str(args.directory / "fixture.parquet")
+                spec, frame, cuts, series = load_repro_config(args.directory)
                 if spec.startswith("demo:"):
-                    transform = _DEMOS[spec.removeprefix("demo:")]
+                    transform = _DEMOS[spec.removeprefix("demo:")][0]
                 else:
                     transform, _ = _load_transform(spec)
-                report = check_batches(transform, frame, cuts=cuts)
+                report = _check(transform, frame, series, cuts=cuts or None)
             else:
                 if args.command == "demo":
-                    spec, transform = f"demo:{args.example}", _DEMOS[args.example]
-                    if args.example == "sensor":
-                        readings = list(range(100))
-                        readings[41] = None
-                        frame = pl.DataFrame({"reading": readings})
-                    else:
-                        frame = pl.DataFrame({"amount": [8, 3, 4, -2]})
+                    spec = f"demo:{args.example}"
+                    fixture_label = spec
+                    transform, series, data = _DEMOS[args.example]
+                    frame = pl.DataFrame(data)
                 else:
+                    fixture_label = str(args.input)
                     transform, spec = _load_transform(args.transform)
                     frame = _read_frame(args.input)
-                report = check_batches(transform, frame, cuts=args.cuts, max_plans=args.max_plans,
-                                       exhaustive=args.exhaustive)
+                    series = args.series
+                    if series is not None:
+                        if series not in frame.columns:
+                            raise ValueError(f"Series column {series!r} was not found in the input")
+                        frame = frame.get_column(series).to_frame()
+                report = _check(transform, frame, series, cuts=args.cuts, max_plans=args.max_plans,
+                                exhaustive=args.exhaustive)
                 if args.save_repro is not None and report["status"] == "fail":
-                    report["repro"] = save_repro(transform, frame, report, args.save_repro, spec=spec)
+                    report["repro"] = save_repro(transform, frame, report, args.save_repro, spec=spec, series=series)
     except Exception as err:
         parser.exit(2, f"batchseam: {err}\n")
     finally:
         sys.path[:] = original_path
+    if "coverage" in report:
+        report["coverage"]["fixture"] = fixture_label
     if args.json:
         print(json.dumps(report, allow_nan=False))
     else:
-        _print_report(report)
+        _print_report(report, series)
         if "repro" in report:
             print(f"Saved repro to {args.save_repro}")
     return {"pass": 0, "fail": 1, "insufficient": 2}[report["status"]]

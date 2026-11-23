@@ -1,6 +1,6 @@
 # Batchseam
 
-**Find a batch boundary that changes your Polars transform, then keep the failing rows as a regression test.** Batchseam compares a whole-frame call with calls on contiguous slices of the same input.
+**Check a Polars batch callback and keep the failing rows as a pytest regression.** For an elementwise Series callback, Batchseam checks that every input row gets one output and that changing the batch boundary preserves dtype, order, and values. For a DataFrame transform, it checks whether concatenating the transformed slices reproduces the whole-frame result.
 
 ## Try it
 
@@ -8,6 +8,46 @@ From this checkout, use a Python 3.12 virtual environment.
 
 ```sh
 python -m pip install ".[test]"
+python -m batchseam demo dates
+python -m batchseam demo center
+python -m batchseam demo positive
+```
+
+| Series callback | What the fixture shows | Exit |
+| --- | --- | --- |
+| Parse ISO dates | Dates and nulls stay in the same positions across the tested splits. | 0 |
+| Subtract the batch mean | For `[10, 30]`, the first output changes from −10 to 0 when the values are processed separately. | 1 |
+| Keep positive values | Three inputs produce only two outputs, before a split is even tried. | 1 |
+
+## Test an elementwise callback
+
+```python
+import polars as pl
+from batchseam import assert_elementwise
+
+def parse_date(values):
+    return values.str.to_date("%Y-%m-%d")
+
+def test_parse_date():
+    dates = pl.Series("day", ["2026-01-01", None, "2026-01-03"])
+    assert_elementwise(parse_date, dates)
+```
+
+Pass the same pure, single-input `Series -> Series` function you would give to `Expr.map_batches`. The callback may change dtype, as the date example does. Its results must keep that output dtype when the input is split. Use `check_elementwise` to get the result dictionary. A passing fixture is evidence for the cuts tried. [Polars expression callback contract](https://docs.pola.rs/api/python/stable/reference/expressions/api/polars.Expr.map_batches.html)
+
+```sh
+batchseam check examples/expressions.py:keep_positive examples/amounts.csv --series amount --save-repro positive-repro
+batchseam replay positive-repro --json
+python -m pytest -q positive-repro
+```
+
+These commands intentionally fail on the sample callback. The Parquet bundle contains only the selected column and replays the Series check against the current callback. Use at least two rows for a regression test you expect to pass after a fix. A shorter fixture can demonstrate a length violation, but after correction there is no interior cut to test and replay returns exit 2. Existing v0.2 DataFrame bundles still replay.
+
+Run `python examples/expressions.py` to see the distinction on `[-1, 2, 3]`: filtering commutes with every single split, but native Polars cannot place the two surviving values in a three-row column.
+
+## Find a boundary in a DataFrame transform
+
+```sh
 python -m batchseam demo sensor --save-repro sensor-repro
 ```
 
@@ -54,7 +94,7 @@ Comparisons check column names and order, types, row count, row order and values
 | Exit | Meaning |
 | --- | --- |
 | 0 | Every tested split matched on this fixture. Other inputs or splits may differ. |
-| 1 | A batch changed the output or raised an exception after the whole-frame call succeeded. |
+| 1 | The callback broke the Series length contract, a batch changed the output, or a batch raised after the whole-input call succeeded. |
 | 2 | The run was inconclusive. This includes fewer than two rows, an invalid command or a failed whole-frame call. |
 
 ## Native streaming experiment

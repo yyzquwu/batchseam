@@ -1,4 +1,4 @@
-"""Compare a whole-frame transform with the same transform on contiguous batches."""
+"""Compare a whole-input transform with the same transform on contiguous batches."""
 
 from collections import deque
 from collections.abc import Callable, Iterator, Sequence
@@ -107,18 +107,12 @@ def _schema(df):
     return [[name, str(dtype)] for name, dtype in df.schema.items()]
 
 
-def check_batches(transform: Callable[[pl.DataFrame], pl.DataFrame], frame: pl.DataFrame, *,
-                  cuts: Sequence[int] | None = None, max_plans: int = _DEFAULT_MAX_PLANS,
-                  exhaustive: bool = False) -> dict:
-    """Check a deterministic, stateless transform. Cut offsets and output rows are zero-based.
-
-    Exhaustive mode checks every individual cut in ascending order until a failure.
-    It cannot be combined with explicit cuts or a nondefault plan budget.
-    """
+def _check(transform, data, cuts, max_plans, exhaustive, *, elementwise=False):
     if type(max_plans) is not int or max_plans < 1:
         raise ValueError("max_plans must be a positive integer")
     if type(exhaustive) is not bool:
         raise ValueError("exhaustive must be a boolean")
+    frame = data.to_frame() if elementwise else data
     rows = frame.height
     if exhaustive:
         if cuts is not None or max_plans != _DEFAULT_MAX_PLANS:
@@ -133,25 +127,40 @@ def check_batches(transform: Callable[[pl.DataFrame], pl.DataFrame], frame: pl.D
             raise ValueError(f"cuts must be strictly increasing interior offsets for {rows} rows")
         plans = [cuts]
 
+    out_type = pl.Series if elementwise else pl.DataFrame
+    call_name = "callback" if elementwise else "transform"
+
     def apply(batch):
         out = transform(batch)
-        if not isinstance(out, pl.DataFrame):
-            raise TypeError("transform must return a Polars DataFrame")
-        return out
+        if not isinstance(out, out_type):
+            raise TypeError(f"{call_name} must return a Polars {out_type.__name__}")
+        # Use the input name for diagnostics and preserve the user's output object.
+        return out.to_frame(data.name) if elementwise else out
 
     try:
-        whole = apply(frame.clone())
+        whole = apply(data.clone())
     except Exception as err:
-        raise ValueError(f"Whole-frame transform failed: {type(err).__name__}: {err}") from err
+        call = "Whole-series callback" if elementwise else "Whole-frame transform"
+        raise ValueError(f"{call} failed: {type(err).__name__}: {err}") from err
     report = dict(status="insufficient" if rows < 2 else "pass", input_rows=rows, checked=0)
+    if elementwise and whole.height != rows:
+        diff = dict(kind="length", scope="whole", expected=rows, actual=whole.height)
+        return dict(report, status="fail", cuts=[], difference=diff)
+    tested = [] if elementwise and not exhaustive else None
     for plan in plans:
+        if tested is not None:
+            tested.append(list(plan))
         parts = []
         report["checked"] += 1
         for start, end in zip((0, *plan), (*plan, rows)):
             try:
-                part = apply(frame.slice(start, end - start))
+                part = apply(data.slice(start, end - start))
             except Exception as err:
                 diff = dict(kind="batch_error", input_span=[start, end], error=f"{type(err).__name__}: {err}")
+                break
+            if elementwise and part.height != end - start:
+                diff = dict(kind="length", scope="batch", expected=end - start, actual=part.height,
+                            input_span=[start, end])
                 break
             if part.columns != whole.columns or part.dtypes != whole.dtypes:
                 diff = dict(kind="schema", input_span=[start, end], whole=_schema(whole), batched=_schema(part))
@@ -161,4 +170,35 @@ def check_batches(transform: Callable[[pl.DataFrame], pl.DataFrame], frame: pl.D
             diff = _difference(whole, pl.concat(parts))
         if diff is not None:
             return dict(report, status="fail", cuts=list(plan), difference=diff)
+    if elementwise and report["status"] == "pass":
+        report["coverage"] = {"column": data.name}
+        if exhaustive:
+            report["coverage"]["single_cut_range"] = [1, rows - 1]
+        else:
+            report["coverage"]["plans"] = tested
     return report
+
+
+def check_batches(transform: Callable[[pl.DataFrame], pl.DataFrame], frame: pl.DataFrame, *,
+                  cuts: Sequence[int] | None = None, max_plans: int = _DEFAULT_MAX_PLANS,
+                  exhaustive: bool = False) -> dict:
+    """Check a deterministic, stateless transform. Cut offsets and output rows are zero-based.
+
+    Exhaustive mode checks every individual cut in ascending order until a failure.
+    It cannot be combined with explicit cuts or a nondefault plan budget.
+    """
+    return _check(transform, frame, cuts, max_plans, exhaustive)
+
+
+def check_elementwise(callback: Callable[[pl.Series], pl.Series], series: pl.Series, *,
+                      cuts: Sequence[int] | None = None, max_plans: int = _DEFAULT_MAX_PLANS,
+                      exhaustive: bool = False) -> dict:
+    """Check whether a deterministic, pure Series callback is elementwise on this fixture.
+
+    Each call must return one value per input row. Batched output must match the
+    whole Series in dtype and exact ordered values. Output names are ignored.
+    Split options match those of check_batches.
+    """
+    if not isinstance(series, pl.Series):
+        raise TypeError("series must be a Polars Series")
+    return _check(callback, series, cuts, max_plans, exhaustive, elementwise=True)

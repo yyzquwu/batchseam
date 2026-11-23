@@ -89,7 +89,7 @@ Use `check_batches` when you want the result dictionary. For either API, the def
 - `--cuts 2,5` tests precisely `[:2]`, `[2:5]`, and `[5:]`.
 - `--save-repro DIR` tries up to 128 reductions and rechecks the saved Parquet data. It can return a larger fixture when further reduction changes the failure. The rows still contain their original values. Choose a new directory and review the rows before sharing it. A successful check creates no bundle.
 
-Comparisons check column names and order, types, row count, row order and values, including exact floating-point comparisons. An output offset refers to the transformed frame, which can have a different number of rows than the input.
+Comparisons use native Polars dtypes and exact floating-point comparisons. DataFrame checks also compare column names and order. An output offset refers to the transformed frame, which can have a different number of rows than the input. If comparing values requires Python `Object` equality, the CLI reports an inconclusive run (exit 2). Use a native output dtype, such as a string representation of a UUID, for an ordered value comparison.
 
 | Exit | Meaning |
 | --- | --- |

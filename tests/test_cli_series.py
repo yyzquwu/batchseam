@@ -57,6 +57,20 @@ def test_plan_discovery_ignores_unselected_columns(tmp_path):
     assert _report(_run(tmp_path, *args, "--cuts", "41"), 1, "fail")["cuts"] == [41]
 
 
+def test_object_values_do_not_create_a_false_regression(tmp_path):
+    (tmp_path / "callbacks.py").write_text(
+        "from uuid import UUID\nimport polars as pl\n"
+        "def ids(s): return pl.Series([UUID(x) for x in s], dtype=pl.Object)\n",
+        encoding="utf-8",
+    )
+    values = ["00000000-0000-0000-0000-000000000001", "00000000-0000-0000-0000-000000000002"]
+    pl.DataFrame({"id": values}).write_parquet(tmp_path / "input.parquet")
+    result = _run(tmp_path, "check", "callbacks.py:ids", "input.parquet", "--series", "id",
+                  "--cuts", "1", "--save-repro", "regression", "--json")
+    assert result.returncode == 2 and not result.stdout and "Polars Object output" in result.stderr
+    assert not (tmp_path / "regression").exists()
+
+
 @pytest.mark.parametrize(("rows", "status", "code"), [(0, "insufficient", 2), (1, "insufficient", 2), (4, "pass", 0)])
 def test_check_series_budget_and_insufficient_input(tmp_path, rows, status, code):
     (tmp_path / "transform.py").write_text("def cents(batch): return batch * 100\n", encoding="utf-8")

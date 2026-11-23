@@ -75,6 +75,9 @@ def _equal(left: pl.DataFrame, right: pl.DataFrame) -> bool:
 def _difference(whole, batched):
     if whole.height != batched.height:
         return dict(kind="row_count", whole=whole.height, batched=batched.height)
+    if pl.Object in whole.dtypes:
+        raise ValueError("Cannot reliably compare Python values in Polars Object output. "
+                         "Return a native Polars dtype to check ordered values.")
     if _equal(whole, batched):
         return None
 

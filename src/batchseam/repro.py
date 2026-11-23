@@ -14,19 +14,28 @@ from .core import check_batches
 _DEMOS = {"demo:sensor", "demo:running-total"}
 _MAX_ATTEMPTS = 128
 _VERSION = 1
-_TEST = '''from pathlib import Path
+_TEST = '''import json
+from pathlib import Path
 import os
 import subprocess
 import sys
 
 
 def test_batchseam_regression():
+    # Start the installed CLI first, then restore this project's pytest import paths.
+    runner = (
+        "import json, sys\\n"
+        "from batchseam.cli import main\\n"
+        "sys.path[:0] = json.load(sys.stdin)\\n"
+        "raise SystemExit(main(['replay', sys.argv[1], '--json']))"
+    )
     result = subprocess.run(
-        [sys.executable, "-m", "batchseam", "replay", str(Path(__file__).resolve().parent)],
-        env={**os.environ, "PYTHONPATH": os.pathsep.join(map(os.path.abspath, sys.path))},
+        [sys.executable, "-P", "-c", runner, str(Path(__file__).resolve().parent)],
+        env={k: v for k, v in os.environ.items() if k.upper() != "PYTHONPATH"},
+        input=json.dumps([os.path.abspath(p) for p in sys.path]),
         capture_output=True, text=True,
     )
-    assert result.returncode == 0, (
+    assert result.returncode == 0 and json.loads(result.stdout)["status"] == "pass", (
         f"batchseam replay exited with {result.returncode}\\n{result.stdout}{result.stderr}"
     )
 '''

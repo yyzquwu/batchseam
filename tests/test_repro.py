@@ -151,6 +151,6 @@ def test_moved_bundle_regression_uses_current_source(tmp_path, monkeypatch):
     regression = runpy.run_path(str(test))["test_batchseam_regression"]
     with pytest.raises(AssertionError, match="batchseam replay exited with 1") as err:
         regression()
-    assert "FAIL" in str(err.value)
+    assert '"status": "fail"' in str(err.value)
     script.write_text("def transform(b): return b\n", encoding="utf-8")
     regression()

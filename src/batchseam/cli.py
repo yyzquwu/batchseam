@@ -29,13 +29,18 @@ def _load_transform(spec):
         root = root.parent
     sys.path[:0] = list(dict.fromkeys(map(str, (root, script.parent, Path.cwd()))))
     if root == script.parent:
-        transform = runpy.run_path(str(script)).get(name)
-    else:
+        namespace = runpy.run_path(str(script))
+    elif script.suffix == ".py" and script.stem.isidentifier():
         parts = script.relative_to(root).with_suffix("").parts
         module = import_module(".".join(parts[:-1] if parts[-1] == "__init__" else parts))
         if Path(module.__file__).resolve() != script:
             raise ValueError(f"Imported {module.__name__} from {module.__file__}, expected {script}")
-        transform = getattr(module, name, None)
+        namespace = vars(module)
+    else:
+        # A filename like daily.v1.py is one file, not two levels of package imports.
+        package = ".".join(script.parent.relative_to(root).parts)
+        namespace = runpy.run_path(str(script), run_name=f"{package}.__batchseam_transform__")
+    transform = namespace.get(name)
     if not callable(transform):
         raise ValueError(f"Could not find callable {name!r} in {script.name}")
     return transform, f"{script}:{name}"

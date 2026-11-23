@@ -70,7 +70,8 @@ def test_multiple_saved_regressions_collect_in_one_pytest_run(tmp_path):
     assert result.returncode == 1 and "2 failed" in result.stdout
 
 
-def test_package_imports_and_pytest_pythonpath_survive_replay(tmp_path):
+@pytest.mark.parametrize("filename", ["transform.py", "daily.v1.py"])
+def test_package_imports_and_pytest_pythonpath_survive_replay(tmp_path, filename):
     project = tmp_path / "project"
     src = project / "src"
     pkg = src / "analytics_pkg"
@@ -78,7 +79,7 @@ def test_package_imports_and_pytest_pythonpath_survive_replay(tmp_path):
     (pkg / "__init__.py").touch()
     ops = pkg / "ops.py"
     ops.write_text("def calc(b): return b.with_columns(b['x'].cum_sum())\n", encoding="utf-8")
-    relative = pkg / "transform.py"
+    relative = pkg / filename
     relative.write_text("from .ops import calc\n", encoding="utf-8")
     standalone = project / "job.py"
     standalone.write_text("from analytics_pkg.ops import calc\n", encoding="utf-8")
@@ -93,10 +94,26 @@ def test_package_imports_and_pytest_pythonpath_survive_replay(tmp_path):
                              env={**os.environ, "PYTHONPATH": str(src)}, capture_output=True, text=True, timeout=60)
         assert out.returncode == 1 and json.loads(out.stdout)["status"] == "fail", out.stderr
     red = _run("pytest", "-q", tests, cwd=tmp_path)
-    assert red.returncode == 1 and "2 failed" in red.stdout and "column 'x'" in red.stdout
+    assert red.returncode == 1 and "2 failed" in red.stdout and '"column": "x"' in red.stdout
     ops.write_text("def calc(b): return b\n", encoding="utf-8")
     green = _run("pytest", "-q", tests, cwd=tmp_path)
     assert green.returncode == 0 and "2 passed" in green.stdout, green.stdout + green.stderr
+
+
+def test_project_transform_named_batchseam_runs_real_regression(tmp_path):
+    script = tmp_path / "batchseam.py"
+    script.write_text("def calc(b): return b.with_columns(b['x'].cum_sum())\n", encoding="utf-8")
+    (tmp_path / "pyproject.toml").write_text('[tool.pytest.ini_options]\npythonpath = ["."]\n', encoding="utf-8")
+    fixture = tmp_path / "fixture.csv"
+    fixture.write_text("x\n1\n2\n", encoding="utf-8")
+    bundle = tmp_path / "regression"
+    saved = _run("batchseam", "check", f"{script}:calc", fixture, "--save-repro", bundle, "--json", cwd=tmp_path)
+    assert saved.returncode == 1 and json.loads(saved.stdout)["status"] == "fail"
+    red = _run("pytest", "-q", bundle, cwd=tmp_path)
+    assert red.returncode == 1 and '"whole": 3, "batched": 2' in red.stdout
+    script.write_text("def calc(b): return b\n", encoding="utf-8")
+    green = _run("pytest", "-q", bundle, cwd=tmp_path)
+    assert green.returncode == 0 and "1 passed" in green.stdout, green.stdout + green.stderr
 
 
 def test_user_bundle_and_generated_test_track_current_source(tmp_path):
@@ -129,7 +146,7 @@ def test_user_bundle_and_generated_test_track_current_source(tmp_path):
     test, = bundle.glob("test_batchseam_*.py")
     result = _run("pytest", "-q", test, cwd=alternate_cwd)
     assert result.returncode == 1
-    assert "batchseam replay exited with 1" in result.stdout and "column 'balance'" in result.stdout
+    assert "batchseam replay exited with 1" in result.stdout and '"column": "balance"' in result.stdout
 
     script.write_text(code.replace(".cum_sum()", " * 100"), encoding="utf-8")
     result = _run("pytest", "-q", test, cwd=alternate_cwd)

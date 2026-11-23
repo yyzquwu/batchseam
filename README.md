@@ -26,7 +26,7 @@ Both commands reproduce the failure. The bundle contains the ordered rows in `fi
 
 ## Check your own transform
 
-Give Batchseam a trusted Python file with a function that accepts and returns an eager Polars DataFrame. It runs in the local Python process. Use a deterministic, stateless transform and a fixture small enough to fit in memory. Each test calls your function multiple times.
+Give Batchseam a trusted Python file with a function that accepts and returns an eager Polars DataFrame. Regular Python packages can use package-relative imports. Make your project's other dependencies available in the active environment, just as you would for its tests. The generated test passes pytest's import paths to the replay. Use a deterministic, stateless transform and a fixture small enough to fit in memory. Each test calls your function multiple times.
 
 ```sh
 batchseam check examples/transforms.py:running_total examples/amounts.csv --cuts 2 --save-repro balance-repro

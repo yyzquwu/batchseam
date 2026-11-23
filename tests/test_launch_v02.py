@@ -70,6 +70,35 @@ def test_multiple_saved_regressions_collect_in_one_pytest_run(tmp_path):
     assert result.returncode == 1 and "2 failed" in result.stdout
 
 
+def test_package_imports_and_pytest_pythonpath_survive_replay(tmp_path):
+    project = tmp_path / "project"
+    src = project / "src"
+    pkg = src / "analytics_pkg"
+    pkg.mkdir(parents=True)
+    (pkg / "__init__.py").touch()
+    ops = pkg / "ops.py"
+    ops.write_text("def calc(b): return b.with_columns(b['x'].cum_sum())\n", encoding="utf-8")
+    relative = pkg / "transform.py"
+    relative.write_text("from .ops import calc\n", encoding="utf-8")
+    standalone = project / "job.py"
+    standalone.write_text("from analytics_pkg.ops import calc\n", encoding="utf-8")
+    (project / "pyproject.toml").write_text('[tool.pytest.ini_options]\npythonpath = ["src"]\n', encoding="utf-8")
+    fixture = project / "fixture.parquet"
+    pl.DataFrame({"x": [1, 2, 3, 4]}).write_parquet(fixture)
+    tests = project / "tests"
+    tests.mkdir()
+    for script in (relative, standalone):
+        out = subprocess.run([sys.executable, "-m", "batchseam", "check", f"{script}:calc", str(fixture),
+                              "--save-repro", str(tests / script.stem), "--json"], cwd=tmp_path,
+                             env={**os.environ, "PYTHONPATH": str(src)}, capture_output=True, text=True, timeout=60)
+        assert out.returncode == 1 and json.loads(out.stdout)["status"] == "fail", out.stderr
+    red = _run("pytest", "-q", tests, cwd=tmp_path)
+    assert red.returncode == 1 and "2 failed" in red.stdout and "column 'x'" in red.stdout
+    ops.write_text("def calc(b): return b\n", encoding="utf-8")
+    green = _run("pytest", "-q", tests, cwd=tmp_path)
+    assert green.returncode == 0 and "2 passed" in green.stdout, green.stdout + green.stderr
+
+
 def test_user_bundle_and_generated_test_track_current_source(tmp_path):
     source = tmp_path / "project files"
     source.mkdir()

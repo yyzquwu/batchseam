@@ -1,5 +1,6 @@
 import argparse
 from contextlib import redirect_stdout
+from importlib import import_module
 import json
 from pathlib import Path
 import runpy
@@ -23,9 +24,18 @@ def _load_transform(spec):
     if not sep or not filename or not name.isidentifier():
         raise ValueError("use transform.py:function")
     script = Path(filename).resolve(strict=True)
-    # Make sibling modules importable just as when running the script directly.
-    sys.path.insert(0, str(script.parent))
-    transform = runpy.run_path(str(script)).get(name)
+    root = script.parent
+    while root != root.parent and (root / "__init__.py").is_file():
+        root = root.parent
+    sys.path[:0] = list(dict.fromkeys(map(str, (root, script.parent, Path.cwd()))))
+    if root == script.parent:
+        transform = runpy.run_path(str(script)).get(name)
+    else:
+        parts = script.relative_to(root).with_suffix("").parts
+        module = import_module(".".join(parts[:-1] if parts[-1] == "__init__" else parts))
+        if Path(module.__file__).resolve() != script:
+            raise ValueError(f"Imported {module.__name__} from {module.__file__}, expected {script}")
+        transform = getattr(module, name, None)
     if not callable(transform):
         raise ValueError(f"Could not find callable {name!r} in {script.name}")
     return transform, f"{script}:{name}"

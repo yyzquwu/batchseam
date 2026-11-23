@@ -15,13 +15,15 @@ _DEMOS = {"demo:sensor", "demo:running-total"}
 _MAX_ATTEMPTS = 128
 _VERSION = 1
 _TEST = '''from pathlib import Path
+import os
 import subprocess
 import sys
 
 
 def test_batchseam_regression():
     result = subprocess.run(
-        [sys.executable, "-I", "-m", "batchseam", "replay", str(Path(__file__).resolve().parent)],
+        [sys.executable, "-m", "batchseam", "replay", str(Path(__file__).resolve().parent)],
+        env={**os.environ, "PYTHONPATH": os.pathsep.join(map(os.path.abspath, sys.path))},
         capture_output=True, text=True,
     )
     assert result.returncode == 0, (

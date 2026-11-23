@@ -141,15 +141,21 @@ def main(argv=None):
     check.add_argument("--series", metavar="COLUMN", help="check a Series callback on this input column")
     replay = commands.add_parser("replay", help="check the transform and split from a saved repro")
     replay.add_argument("directory", metavar="DIR", type=Path)
+    scan = commands.add_parser("scan", help="find batch claims in Python source without running it")
+    scan.add_argument("path", nargs="?", default=Path("."), type=Path, metavar="PATH")
     for command in (demo, check):
         group = command.add_mutually_exclusive_group()
         group.add_argument("--cuts", type=_cuts, help="replay a split at these zero-based offsets")
         group.add_argument("--max-plans", type=int, default=16, help="maximum number of candidate splits (default 16)")
         group.add_argument("--exhaustive", action="store_true", help="check every single interior cut until a difference")
         command.add_argument("--save-repro", metavar="DIR", type=Path, help="save a reduced fixture and regression test on failure")
-    for command in (demo, check, replay):
+    for command in (demo, check, replay, scan):
         command.add_argument("--json", action="store_true", help="emit the result as JSON on stdout")
     args = parser.parse_args(argv)
+    if args.command == "scan":
+        from .scan_cli import scan_report
+
+        return scan_report(args.path, as_json=args.json)
     original_path = sys.path[:]
     try:
         with redirect_stdout(sys.stderr):

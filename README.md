@@ -2,12 +2,42 @@
 
 **Check a Polars batch callback and keep the failing rows as a pytest regression.** For an elementwise Series callback, Batchseam checks that every input row gets one output and that changing the batch boundary preserves dtype, order, and values. For a DataFrame transform, it checks whether concatenating the transformed slices reproduces the whole-frame result.
 
-## Try it
+## Find your first check
 
 From this checkout, use a Python 3.12 virtual environment.
 
 ```sh
 python -m pip install ".[test]"
+batchseam scan .
+```
+
+Run `scan` in a Python project to find calls to `map_batches` with an explicit `is_elementwise=True` or `streamable=True`. Each finding shows a source location, the callback, and a suggested next step. The scanner reads Python syntax without importing your project. A finding identifies a claim to test. You supply the fixture and run the check to learn whether the claim holds.
+
+Try the whole workflow from the Batchseam checkout:
+
+```sh
+cd examples
+batchseam scan .
+batchseam check expressions.py:keep_positive amounts.csv --series amount --save-repro positive-repro
+batchseam replay positive-repro
+python -m pytest -q positive-repro
+```
+
+The scan exits 0. The check exits 1 because `amounts.csv` contains four amounts and the callback returns only three positive ones. Replay and pytest reproduce the failure. When trying your own project, substitute a representative CSV or Parquet file and the actual input column in the command template. Relative commands use the root printed by the scan. Start subsequent examples from the checkout root.
+
+### How to use a finding
+
+- **Named function.** SportsDataverse calls `expr.map_batches(_series_as_date, ..., is_elementwise=True)` on an annotated Polars expression. The scan can point to the function in the same file. On a three-row fixture of ISO dates and a null, this callback passed both individual cuts. [Upstream date parser](https://github.com/sportsdataverse/sportsdataverse-py/blob/2443d9ffd8f5a493d189079814fef8d33f767bf0/sportsdataverse/_temporal.py#L13-L19)
+- **Inline lambda.** Extract it into a shared named callback so your pipeline and test execute the same function. [Geometry conversion example](https://github.com/oreilles/polars-st/blob/58dca7a693b7f005fbe031ae39160cae7c85760d/polars_st/parsing.py#L375-L384)
+- **Bound method.** Construct the instance with your project's configuration and pass its bound method to the assertion. [Interpolation example](https://github.com/crdcj/PYield/blob/5572bf034227fd782f70f6b6d0ea4f389a40397f/pyield/interpolador.py#L293)
+
+An **ambiguous** receiver needs a human to confirm its type. Dynamic flags, wrappers and cross-module resolution can leave calls undiscovered. For automation, use `batchseam scan . --json`. An incomplete scan exits 2 and reports the files that could not be read or parsed alongside findings from the other files.
+
+You can also scan one Python file. Directory scans skip environments, dependency and build folders, links, and recognized generated files, including saved Batchseam regression tests.
+
+## Try the Series demos
+
+```sh
 python -m batchseam demo dates
 python -m batchseam demo center
 python -m batchseam demo positive

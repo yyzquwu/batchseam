@@ -28,6 +28,7 @@ class _Binding:
     value: ast.AST | str | None
     annotation: ast.expr | None
     annotation_scope: "_Scope"
+    optional_none: bool = False
 
 
 class _Scope:
@@ -57,15 +58,21 @@ class _Scan(ast.NodeVisitor):
         self.conditional = 0
 
     def _bind(self, name, node, value=None, annotation=None, annotation_scope=None):
-        keep = not self.conditional or isinstance(node, (ast.Import, ast.ImportFrom)) or _literal(value, None)
+        if name in self.scope.globals or name in self.scope.nonlocals:
+            # Another closure can change this binding between assignment and use.
+            self.scope.bindings[name] = []
+            if name in self.scope.globals:
+                self.module.bindings.setdefault(name, []).append(_Binding(node, None, None, self.module))
+            else:
+                self.nonlocal_writes.append((self.scope.parent, name))
+            return
+        keep = (not self.conditional or isinstance(node, (ast.Import, ast.ImportFrom))
+                or isinstance(value, (ast.Name, ast.Attribute)))
         self.scope.bindings.setdefault(name, []).append(_Binding(
             node, value if keep else None,
             annotation if not self.conditional else None, annotation_scope or self.scope,
+            bool(self.conditional and _literal(value, None)),
         ))
-        if name in self.scope.globals:
-            self.module.bindings.setdefault(name, []).append(_Binding(node, None, None, self.module))
-        if name in self.scope.nonlocals:
-            self.nonlocal_writes.append((self.scope.parent, name))
 
     def visit_Import(self, node):
         for item in node.names:
@@ -220,9 +227,10 @@ def _binding(name, scope, pos):
             break
         if name in scope.bindings:
             bindings = scope.bindings[name]
-            if len(bindings) > 1 and any(isinstance(b.node, (ast.Import, ast.ImportFrom)) for b in bindings):
-                # Optional imports often fall back to None, which cannot supply a callable.
-                bindings = [b for b in bindings if not _literal(b.value, None)]
+            if len(bindings) > 1 and any(isinstance(b.node, (ast.Import, ast.ImportFrom))
+                                         or isinstance(b.value, (ast.Name, ast.Attribute)) for b in bindings):
+                # Optional imports and aliases often fall back to None, which cannot supply a callable.
+                bindings = [b for b in bindings if not b.optional_none]
             if len(bindings) == 1:
                 binding = bindings[0]
                 node = binding.node
@@ -265,6 +273,8 @@ def _symbol(expr, scope, pos):
         root = _symbol(expr.value, scope, pos)
         if root in _POLARS_MEMBERS:
             return f"{root}.{expr.attr}"
+        if root in {"<module>", "<module-attribute>"}:
+            return "<module-attribute>"
         if expr.attr == "map_batches" and root in {"series", "frame"}:
             return f"{root}.map_batches"
     if isinstance(expr, ast.Call):
@@ -359,7 +369,7 @@ def discover(source: str, path: str) -> list[dict]:
         kind = {ast.Name: "named", ast.Lambda: "lambda", ast.Attribute: "bound"}.get(type(callback), "other")
         if isinstance(callback, ast.Attribute):
             owner = _symbol(callback.value, scope, pos)
-            if owner == "<module>" or owner in _POLARS_MEMBERS:
+            if owner in {"<module>", "<module-attribute>"} or owner in _POLARS_MEMBERS:
                 kind = "qualified"
         for flag in flags:
             findings.append({

@@ -224,3 +224,28 @@ def test_nonlocal_rebinding_makes_enclosing_receiver_ambiguous():
             return obj.map_batches(lambda s: s + 1, is_elementwise=True)
     ''')
     assert (row["confidence"], row["mode"], row["target"]) == ("ambiguous", "unknown", None)
+
+
+def test_optional_method_alias_and_shared_nonlocal_do_not_guess_series_contract():
+    a, b = scan('''
+        try:
+            import polars as pl
+            apply = pl.map_batches
+        except ImportError:
+            apply = None
+        def add(parts): return parts[0] + parts[1]
+        def build():
+            receiver = pl
+            def switch():
+                nonlocal receiver
+                receiver = pl
+            def select():
+                nonlocal receiver
+                receiver = pl.col("x")
+                switch()
+                return receiver.map_batches(exprs=["x", "y"], function=add, is_elementwise=True)
+            return select()
+        apply(["x", "y"], add, is_elementwise=True)
+    ''')
+    assert (a["mode"], a["target"], a["callback"]) == ("unknown", None, "add")
+    assert (b["mode"], b["callback"]) == ("multi", "add")

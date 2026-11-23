@@ -62,6 +62,17 @@ def test_running_total_bundle_human_output(tmp_path):
     assert "2 input rows" in result.stdout and "column 'balance'" in result.stdout
 
 
+def test_bundle_diagnostics_name_the_path(tmp_path):
+    parent = tmp_path / "missing"
+    result = _run("batchseam", "demo", "--save-repro", parent / "repro", "--json", cwd=tmp_path)
+    assert result.returncode == 2 and not result.stdout and not parent.exists()
+    assert "existing parent directory" in result.stderr and str(parent) in result.stderr
+    manifest = tmp_path / "repro.json"
+    manifest.write_text("{", encoding="utf-8")
+    result = _run("batchseam", "replay", tmp_path, "--json", cwd=tmp_path)
+    assert result.returncode == 2 and not result.stdout and str(manifest) in result.stderr
+
+
 def test_multiple_saved_regressions_collect_in_one_pytest_run(tmp_path):
     for name in ["sensor", "running-total"]:
         result = _run("batchseam", "demo", name, "--save-repro", tmp_path / name, cwd=tmp_path)

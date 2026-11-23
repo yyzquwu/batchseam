@@ -120,6 +120,8 @@ def save_repro(transform, frame, report, dest, *, spec) -> dict:
     ref = _saved_spec(spec, dest)
     if dest.exists() or dest.is_symlink():
         raise FileExistsError(f"Repro destination already exists: {dest}")
+    if not dest.parent.is_dir():
+        raise NotADirectoryError(f"Choose an existing parent directory for the repro: {dest.parent}")
     original = check_batches(transform, frame, cuts=report["cuts"])
     if original.get("difference") != report["difference"]:
         raise ValueError("The original split did not reproduce the reported failure")
@@ -160,7 +162,11 @@ def save_repro(transform, frame, report, dest, *, spec) -> dict:
 def load_repro(dest) -> tuple[str, pl.DataFrame, list[int]]:
     """Load the fixture and split, resolving user transforms from the bundle directory."""
     dest = Path(dest).resolve()
-    meta = json.loads((dest / "repro.json").read_text(encoding="utf-8"))
+    manifest = dest / "repro.json"
+    try:
+        meta = json.loads(manifest.read_text(encoding="utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as err:
+        raise ValueError(f"Invalid repro manifest {manifest}: {err}") from err
     if not isinstance(meta, dict) or type(meta.get("version")) is not int or meta["version"] != _VERSION:
         raise ValueError("Unsupported repro bundle version")
     spec, cuts, rows = meta.get("transform"), meta.get("cuts"), meta.get("input_rows")

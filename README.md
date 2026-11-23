@@ -60,7 +60,7 @@ Paths are relative to the manifest. Modes are `expr`, `frame`, and `series`. Ser
 batchseam suite batchseam.toml --save-failures batchseam-results --markdown >> "$GITHUB_STEP_SUMMARY"
 ```
 
-The command writes the named outcomes to the job summary and keeps its usual exit status. Each demonstrated failure that saves successfully gets a numbered directory, such as `batchseam-results/check-0001`, containing its Parquet witness and generated pytest test. The complete machine-readable report is `batchseam-results/summary.json`. Choose a new output directory per run.
+The command writes named outcomes to the job summary. Each successfully saved failure gets a numbered directory, such as `batchseam-results/check-0001`, containing its Parquet witness and generated pytest test. A bundle-save error makes that check an error and the suite exits 2. The complete machine-readable report is `batchseam-results/summary.json`. Choose a new output directory per run.
 
 If you download a bundle from CI, unpack it at the same relative location in a checkout of the project, install its dependencies, and run `python -m pytest -q batchseam-results/check-0001`. The Markdown summary omits raw input and output values. The optional JSON and Parquet artifacts can contain the original data. [Version 1 compatibility contract](https://github.com/yyzquwu/batchseam/blob/v1.0.0/docs/compatibility.md)
 
@@ -135,7 +135,7 @@ batchseam replay positive-repro --json
 python -m pytest -q positive-repro
 ```
 
-These commands intentionally fail on the sample callback. The Parquet bundle contains only the selected column and replays the Series check against the current callback. Use at least two rows for a regression test you expect to pass after a fix. A shorter fixture can demonstrate a length violation, but after correction there is no interior cut to test and replay returns exit 2. Existing v0.2 DataFrame bundles still replay.
+These commands intentionally fail on the sample callback. The Parquet bundle contains only the selected column and replays the Series check against the current callback. Use at least two rows to test a batch boundary. With zero or one row, a newly generated regression test can still guard a whole-input length violation. After that violation is fixed, pytest passes and replay reports insufficient split coverage (exit 2). Existing v0.2 DataFrame bundles still replay.
 
 Run `python examples/expressions.py` to see the distinction on `[-1, 2, 3]`: filtering commutes with every single split, but native Polars cannot place the two surviving values in a three-row column.
 

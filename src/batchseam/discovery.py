@@ -29,6 +29,7 @@ class _Binding:
     annotation: ast.expr | None
     annotation_scope: "_Scope"
     optional_none: bool = False
+    suite: tuple | None = None
 
 
 class _Scope:
@@ -56,6 +57,7 @@ class _Scan(ast.NodeVisitor):
         self.generators = set()
         self.nonlocal_writes = []
         self.conditional = 0
+        self.suite = None
 
     def _bind(self, name, node, value=None, annotation=None, annotation_scope=None):
         if name in self.scope.globals or name in self.scope.nonlocals:
@@ -68,13 +70,15 @@ class _Scan(ast.NodeVisitor):
             return
         keep = (not self.conditional or isinstance(node, (ast.Import, ast.ImportFrom))
                 or isinstance(value, (ast.Name, ast.Attribute)))
-        # An unset class attribute can resolve to a different name in the enclosing scope.
-        if self.conditional and self.scope.kind == "class":
+        # A conditional class assignment can mask an enclosing name only on its executed path.
+        class_conditional = self.conditional and self.scope.kind == "class"
+        if class_conditional and self.suite is None:
             keep = False
         self.scope.bindings.setdefault(name, []).append(_Binding(
             node, value if keep else None,
             annotation if not self.conditional else None, annotation_scope or self.scope,
             bool(self.conditional and _literal(value, None)),
+            self.suite if class_conditional else None,
         ))
 
     def visit_Import(self, node):
@@ -145,12 +149,28 @@ class _Scan(ast.NodeVisitor):
         self.scope.nonlocals.update(node.names)
 
     def _branch(self, node):
+        previous, self.suite = self.suite, None
         self.conditional += 1
         self.generic_visit(node)
         self.conditional -= 1
+        self.suite = previous
 
-    visit_If = visit_For = visit_AsyncFor = visit_While = visit_With = visit_AsyncWith = _branch
+    visit_For = visit_AsyncFor = visit_While = visit_With = visit_AsyncWith = _branch
     visit_Try = visit_TryStar = visit_Match = visit_IfExp = visit_BoolOp = _branch
+
+    def visit_If(self, node):
+        if self.scope.kind != "class":
+            return self._branch(node)
+        self.visit(node.test)
+        previous = self.suite
+        self.conditional += 1
+        for stmts in (node.body, node.orelse):
+            if stmts:
+                self.suite = (_pos(stmts[0]), (stmts[-1].end_lineno, stmts[-1].end_col_offset))
+                for stmt in stmts:
+                    self.visit(stmt)
+        self.conditional -= 1
+        self.suite = previous
 
     def _enter(self, kind):
         outer, conditional = self.scope, self.conditional
@@ -239,6 +259,8 @@ def _binding(name, scope, pos):
             if len(bindings) == 1:
                 binding = bindings[0]
                 node = binding.node
+                if binding.suite and (pos is None or not binding.suite[0] <= pos <= binding.suite[1]):
+                    break
                 if pos is None or node is None or (node.end_lineno, node.end_col_offset) <= pos:
                     return binding, scope
             break
@@ -318,6 +340,13 @@ def _callback(call, index):
     return kw[0] if len(kw) == 1 else None
 
 
+def _sequence(expr, scope, pos):
+    if isinstance(expr, ast.Name):
+        binding, _ = _binding(expr.id, scope, pos)
+        expr = binding.value if binding else None
+    return isinstance(expr, (ast.List, ast.Tuple))
+
+
 def _short(node):
     source = ast.unparse(node)
     return source if len(source) <= 80 else source[:77] + "..."
@@ -369,10 +398,12 @@ def discover(source: str, path: str) -> list[dict]:
         else:
             continue
         confirmed = mode != "unknown"
-        if mode != "multi" and (any(kw.arg == "exprs" for kw in call.keywords)
-                                or len(call.args) >= 2 and isinstance(call.args[0], (ast.List, ast.Tuple))):
+        keywords = {kw.arg for kw in call.keywords}
+        if mode != "multi" and ("exprs" in keywords or len(call.args) >= 2
+                               and ("return_dtype" in keywords or _sequence(call.args[0], scope, pos))):
             mode, index, confirmed = "multi", 1, False
-        callback = _callback(call, index)
+        # With an unresolved receiver, two positional arguments can also mean (function, dtype).
+        callback = None if mode == "unknown" and len(call.args) >= 2 else _callback(call, index)
         kind = {ast.Name: "named", ast.Lambda: "lambda", ast.Attribute: "bound"}.get(type(callback), "other")
         if isinstance(callback, ast.Attribute):
             owner = _symbol(callback.value, scope, pos)

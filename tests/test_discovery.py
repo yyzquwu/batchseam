@@ -268,3 +268,23 @@ def test_conditional_class_binding_cannot_override_multi_input_signature():
     ''')
     assert [(row["mode"], row["confidence"], row["target"]) for row in (a, b)] == [
         ("multi", "ambiguous", None), ("unknown", "ambiguous", None)]
+
+
+def test_guarded_import_and_positional_column_variable_in_class():
+    rows = scan('''
+        import polars as pl
+        receiver = pl
+        cols = ["x", "y"]
+        def add(parts): return parts[0] + parts[1]
+        class Example:
+            if use_expr:
+                receiver = pl.col("x")
+            else:
+                xs = receiver.map_batches(cols, add, is_elementwise=True)
+                from polars import map_batches as many
+                ys = many(cols, add, is_elementwise=True)
+        def uncertain(obj, x, y):
+            return obj.map_batches(x, y, is_elementwise=True)
+    ''')
+    assert [(r["callback"], r["mode"], r["confidence"]) for r in rows] == [
+        ("add", "multi", "ambiguous"), ("add", "multi", "polars"), ("<unknown>", "unknown", "ambiguous")]

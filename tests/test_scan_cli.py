@@ -115,3 +115,13 @@ def test_named_frame_template_has_no_series_option(tmp_path):
     finding, = _report(_run(tmp_path, "scan", "--json"), 0)["findings"]
     assert finding["argv"] == ["batchseam", "check", "frames.py:identity", "FIXTURE.parquet"]
     assert "COLUMN" not in finding["command"] and "COLUMN" not in finding["guidance"]
+
+
+def test_qualified_callback_advice_keeps_the_module_function(tmp_path):
+    (tmp_path / "pipe.py").write_text(
+        "import helpers as h\nimport polars as pl\n"
+        "pl.col('x').map_batches(h.normalize, is_elementwise=True)\n", encoding="utf-8")
+    row, = _report(_run(tmp_path, "scan", "--json"), 0)["findings"]
+    assert row["kind"] == "qualified" and row["command"] is None
+    assert "assert_elementwise(h.normalize, series)" in row["guidance"]
+    assert "instance" not in row["guidance"]

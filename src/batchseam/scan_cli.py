@@ -35,10 +35,14 @@ def _guidance(finding):
     callback = "callback"
     if kind == "lambda":
         message = "Extract the lambda into a named function and use that function at this call site and in the test. "
+    elif kind == "qualified":
+        callback = finding["callback"]
+        message = "Import the same module in your test and use the qualified callback directly. "
     elif kind == "bound":
         method = finding["callback"].rpartition(".")[2]
         callback = f"instance.{method}" if method.isidentifier() else "instance.method"
-        message = "For a bound method, create an instance with the same configuration in your test. "
+        message = ("For a bound method, create an instance with the same configuration in your test. "
+                   "If the attribute names a module function, use that function directly. ")
     else:
         message = "Identify the callable and its input and output types at this call site. "
 

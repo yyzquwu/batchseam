@@ -190,3 +190,37 @@ def test_receiver_in_long_fluent_pipeline():
     chain = "pl.LazyFrame()" + ".clone()" * 35
     row, = discover(f"import polars as pl\n{chain}.map_batches(fn, streamable=True)", "pipeline.py")
     assert (row["mode"], row["confidence"]) == ("frame", "polars")
+
+
+def test_optional_import_and_renamed_methods_select_the_actual_callback():
+    rows = scan('''
+        try:
+            import polars as p
+            from polars import map_batches as many
+        except ImportError:
+            p = many = None
+        def ratio(cols): return cols[0] / cols[1]
+        def doubled(s): return s * 2
+        p.map_batches(["x", "y"], ratio, is_elementwise=True)
+        many(["x", "y"], ratio, is_elementwise=True)
+        def plan(expr: p.Expr):
+            apply = expr.map_batches
+            return apply(doubled, is_elementwise=True)
+    ''')
+    assert [(r["mode"], r["callback"]) for r in rows] == [
+        ("multi", "ratio"), ("multi", "ratio"), ("series", "doubled")]
+    assert rows[-1]["target"] == "workflow.py:doubled"
+
+
+def test_nonlocal_rebinding_makes_enclosing_receiver_ambiguous():
+    row, = scan('''
+        import polars as pl
+        def build():
+            obj = pl.LazyFrame()
+            def set_expr():
+                nonlocal obj
+                obj = pl.col("x")
+            set_expr()
+            return obj.map_batches(lambda s: s + 1, is_elementwise=True)
+    ''')
+    assert (row["confidence"], row["mode"], row["target"]) == ("ambiguous", "unknown", None)

@@ -1,45 +1,55 @@
 # Batchseam
 
-Does your Polars transform give the same answer when a batch ends halfway through the input? Batchseam runs the transform on the whole frame, splits the same rows into contiguous batches, and compares the concatenated results. A failure includes the cut offsets you can replay and the first differing output cell when both outputs have the same shape and schema.
+**Find a batch boundary that changes your Polars transform, then keep the failing rows as a regression test.** Batchseam compares a whole-frame call with calls on contiguous slices of the same input.
 
 ## Try it
 
-From this checkout, use a Python 3.11+ virtual environment.
+From this checkout, use a Python 3.12 virtual environment.
 
 ```sh
-python -m pip install .
-python -m batchseam demo
+python -m pip install ".[test]"
+python -m batchseam demo sensor --save-repro sensor-repro
 ```
 
-The demo takes the running total of `[8, 3, 4, -2]`. It exits 1.
+The demo forward-fills 100 sensor readings. Only row 41 is null. When a batch starts there, the callback loses the preceding value. The demo exits 1 and saves the failure in a new directory.
 
-```text
-FAIL  |  4 input rows  |  1 split plan checked
-Replay this split with --cuts 2
-First difference at output row 2 (zero-based), column 'balance'
-Whole frame: 15
-Batched:     4
+| Reduced input | Whole-frame output | Output with a cut after the first row |
+| --- | --- | --- |
+| `[40, null]` | `[40, 40]` | `[40, null]` |
+
+```sh
+python -m batchseam replay sensor-repro
+python -m pytest -q sensor-repro/test_regression.py
 ```
+
+Both commands reproduce the failure. The bundle contains the ordered rows in `fixture.parquet`, the transform reference and cut offsets in `repro.json`, and a pytest test. For a transform from your project, the test runs your current code. Keep the bundle and source in the same relative locations when moving a project. Paths across Windows drives use an absolute reference. The original running-total example is still available with `python -m batchseam demo`.
 
 ## Check your own transform
 
 Give Batchseam a trusted Python file with a function that accepts and returns an eager Polars DataFrame. It runs in the local Python process. Use a deterministic, stateless transform and a fixture small enough to fit in memory. Each test calls your function multiple times.
 
 ```sh
-batchseam check examples/transforms.py:running_total examples/amounts.csv --cuts 2
+batchseam check examples/transforms.py:running_total examples/amounts.csv --cuts 2 --save-repro balance-repro
 batchseam check examples/transforms.py:cents examples/amounts.csv --json
 ```
 
 CSV and Parquet inputs use the same command. The `cents` example passes because each row converts independently. A global running balance needs state across batches. In a real Polars pipeline, express that calculation with a native cumulative expression on the full lazy frame, or run the callback on the whole input.
 
 ```python
-from batchseam import check_batches
+from batchseam import assert_batch_invariant
 
-result = check_batches(my_transform, frame, cuts=[2, 5])
-assert result["status"] == "pass", result
+def test_my_transform(frame):
+    assert_batch_invariant(my_transform, frame, cuts=[2, 5])
 ```
 
-The default tries a midpoint, a three-way split, edge cuts and additional interior offsets, stopping at the first difference or 16 plans. `--max-plans N` changes the budget. `--cuts 2,5` runs precisely the three slices `[:2]`, `[2:5]`, and `[5:]`. Comparisons check column names and order, types, row count, row order and values, including exact floating-point comparisons. An output offset refers to the transformed frame, which can have a different number of rows than the input.
+Use `check_batches` when you want the result dictionary. For either API, the default mixes ordinary cuts with boundaries where columns enter or leave null runs. It stops at the first failure or 16 plans. On the sensor fixture, v0.1 passed all 16 default plans and needed 48 attempts with an increased budget to find cut 41. Version 0.2 finds it on attempt five. Checking all 99 single cuts independently confirmed that only cut 41 fails.
+
+- `--max-plans N` sets the discovery budget.
+- `--exhaustive` tries every single interior cut in order until one fails. Use it on small fixtures. Combinations of multiple cuts can expose additional failures.
+- `--cuts 2,5` tests precisely `[:2]`, `[2:5]`, and `[5:]`.
+- `--save-repro DIR` tries up to 128 reductions and rechecks the saved Parquet data. It can return a larger fixture when further reduction changes the failure. The rows still contain their original values. Choose a new directory and review the rows before sharing it. A successful check creates no bundle.
+
+Comparisons check column names and order, types, row count, row order and values, including exact floating-point comparisons. An output offset refers to the transformed frame, which can have a different number of rows than the input.
 
 | Exit | Meaning |
 | --- | --- |

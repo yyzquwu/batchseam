@@ -2,14 +2,18 @@
 
 from collections import deque
 from collections.abc import Callable, Iterator, Sequence
-from itertools import islice
+from itertools import islice, zip_longest
 from math import isfinite
 
 import polars as pl
 from polars.testing import assert_frame_equal
 
 
-def _plans(rows: int) -> Iterator[tuple[int, ...]]:
+_DEFAULT_MAX_PLANS = 16
+_NULL_SCAN_ROWS = 4096
+
+
+def _ordinary_plans(rows: int) -> Iterator[tuple[int, ...]]:
     """Try a halfway split, a three-way split, the edges, then bisect gaps."""
     if rows < 2:
         return
@@ -28,6 +32,36 @@ def _plans(rows: int) -> Iterator[tuple[int, ...]]:
             cut = (lo + hi) // 2
             yield (cut,)
             spans.extend([(lo, cut - 1), (cut + 1, hi)])
+
+
+def _null_cuts(frame: pl.DataFrame) -> Iterator[int]:
+    cols = [col for col in frame.iter_columns() if 0 < col.null_count() < frame.height]
+    if not cols:
+        return
+    # Include the previous row so each window also checks its left boundary.
+    for start in range(1, frame.height, _NULL_SCAN_ROWS):
+        size = min(_NULL_SCAN_ROWS, frame.height - start)
+        changes = pl.repeat(False, size, eager=True)
+        for col in cols:
+            mask = col.slice(start - 1, size + 1).is_null()
+            changes |= mask.head(size) != mask.tail(size)
+        for offset in changes.arg_true():
+            yield start + offset
+
+
+def _plans(frame: pl.DataFrame) -> Iterator[tuple[int, ...]]:
+    ordinary = _ordinary_plans(frame.height)
+    seen = set()
+    # Keep the midpoint, three-way split, and edges first when available.
+    for plan in islice(ordinary, 4):
+        seen.add(plan)
+        yield plan
+    nulls = ((cut,) for cut in _null_cuts(frame))
+    for pair in zip_longest(nulls, ordinary):
+        for plan in pair:
+            if plan is not None and plan not in seen:
+                seen.add(plan)
+                yield plan
 
 
 def _equal(left: pl.DataFrame, right: pl.DataFrame) -> bool:
@@ -74,13 +108,24 @@ def _schema(df):
 
 
 def check_batches(transform: Callable[[pl.DataFrame], pl.DataFrame], frame: pl.DataFrame, *,
-                  cuts: Sequence[int] | None = None, max_plans: int = 16) -> dict:
-    """Check a deterministic, stateless transform. Cut offsets and output rows are zero-based."""
+                  cuts: Sequence[int] | None = None, max_plans: int = _DEFAULT_MAX_PLANS,
+                  exhaustive: bool = False) -> dict:
+    """Check a deterministic, stateless transform. Cut offsets and output rows are zero-based.
+
+    Exhaustive mode checks every individual cut in ascending order until a failure.
+    It cannot be combined with explicit cuts or a nondefault plan budget.
+    """
     if type(max_plans) is not int or max_plans < 1:
         raise ValueError("max_plans must be a positive integer")
+    if type(exhaustive) is not bool:
+        raise ValueError("exhaustive must be a boolean")
     rows = frame.height
-    if cuts is None:
-        plans = islice(_plans(rows), min(max_plans, rows))
+    if exhaustive:
+        if cuts is not None or max_plans != _DEFAULT_MAX_PLANS:
+            raise ValueError("exhaustive cannot be combined with cuts or a nondefault max_plans")
+        plans = ((cut,) for cut in range(1, rows))
+    elif cuts is None:
+        plans = islice(_plans(frame), min(max_plans, rows))
     else:
         cuts = tuple(cuts)
         if (not cuts or any(type(c) is not int or not 0 < c < rows for c in cuts)

@@ -1,0 +1,35 @@
+name: Test wheels
+on: [push, pull_request]
+permissions:
+  contents: read
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+        python: ["3.11", "3.12"]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7
+        with:
+          python-version: ${{ matrix.python }}
+      - run: python -m pip install build
+      - run: python -m build
+      - name: Install the wheel and run the suite
+        shell: bash
+        run: |
+          wheel=(dist/*.whl)
+          python -m pip install "${wheel[0]}[test]"
+          python -I -m pytest -q tests
+      - name: Try the installed demo outside the checkout
+        shell: bash
+        run: |
+          cd "$RUNNER_TEMP"
+          status=0
+          batchseam demo fx --json > fx.json || status=$?
+          test "$status" = 1
+          python -c "import json; r=json.load(open('fx.json')); d=r['difference']; assert (r['cuts'], d['output_row'], d['whole'], d['batched']) == ([1], 1, 10, 20)"

@@ -110,12 +110,27 @@ def _schema(df):
     return [[name, str(dtype)] for name, dtype in df.schema.items()]
 
 
-def _check(transform, data, cuts, max_plans, exhaustive, *, elementwise=False):
+def _input_values(frame, row):
+    values = {}
+    for col in frame.slice(row, 1).iter_columns():
+        dtype = col.dtype
+        if col.null_count():
+            values[col.name] = None
+        elif dtype.is_integer() or dtype.is_float() or dtype in (pl.String, pl.Boolean, pl.Categorical, pl.Enum, pl.Object):
+            value = col.item()
+            if type(value) in (str, bool, int) or (type(value) is float and isfinite(value)):
+                values[col.name] = value
+    return values
+
+
+def _check(transform, data, cuts, max_plans, exhaustive, *, mode="frame"):
     if type(max_plans) is not int or max_plans < 1:
         raise ValueError("max_plans must be a positive integer")
     if type(exhaustive) is not bool:
         raise ValueError("exhaustive must be a boolean")
-    frame = data.to_frame() if elementwise else data
+    series = mode == "series"
+    elementwise = mode != "frame"
+    frame = data.to_frame() if series else data
     rows = frame.height
     if exhaustive:
         if cuts is not None or max_plans != _DEFAULT_MAX_PLANS:
@@ -130,20 +145,22 @@ def _check(transform, data, cuts, max_plans, exhaustive, *, elementwise=False):
             raise ValueError(f"cuts must be strictly increasing interior offsets for {rows} rows")
         plans = [cuts]
 
-    out_type = pl.Series if elementwise else pl.DataFrame
-    call_name = "callback" if elementwise else "transform"
+    out_type = pl.Series if series else pl.DataFrame
+    call_name = "callback" if series else "transform"
+    errors = (Exception, pl.exceptions.PanicException) if mode == "expr" else (Exception,)
 
     def apply(batch):
         out = transform(batch)
         if not isinstance(out, out_type):
             raise TypeError(f"{call_name} must return a Polars {out_type.__name__}")
         # Use the input name for diagnostics and preserve the user's output object.
-        return out.to_frame(data.name) if elementwise else out
+        return out.to_frame(data.name) if series else out
 
     try:
         whole = apply(data.clone())
-    except Exception as err:
-        call = "Whole-series callback" if elementwise else "Whole-frame transform"
+    except errors as err:
+        call = {"frame": "Whole-frame transform", "series": "Whole-series callback",
+                "expr": "Whole-frame expression"}[mode]
         raise ValueError(f"{call} failed: {type(err).__name__}: {err}") from err
     report = dict(status="insufficient" if rows < 2 else "pass", input_rows=rows, checked=0)
     if elementwise and whole.height != rows:
@@ -158,7 +175,7 @@ def _check(transform, data, cuts, max_plans, exhaustive, *, elementwise=False):
         for start, end in zip((0, *plan), (*plan, rows)):
             try:
                 part = apply(data.slice(start, end - start))
-            except Exception as err:
+            except errors as err:
                 diff = dict(kind="batch_error", input_span=[start, end], error=f"{type(err).__name__}: {err}")
                 break
             if elementwise and part.height != end - start:
@@ -172,9 +189,11 @@ def _check(transform, data, cuts, max_plans, exhaustive, *, elementwise=False):
         else:
             diff = _difference(whole, pl.concat(parts))
         if diff is not None:
+            if mode == "expr" and diff["kind"] == "value":
+                diff["input_values"] = _input_values(frame, diff["output_row"])
             return dict(report, status="fail", cuts=list(plan), difference=diff)
     if elementwise and report["status"] == "pass":
-        report["coverage"] = {"column": data.name}
+        report["coverage"] = {"column": whole.columns[0]}
         if exhaustive:
             report["coverage"]["single_cut_range"] = [1, rows - 1]
         else:
@@ -204,4 +223,27 @@ def check_elementwise(callback: Callable[[pl.Series], pl.Series], series: pl.Ser
     """
     if not isinstance(series, pl.Series):
         raise TypeError("series must be a Polars Series")
-    return _check(callback, series, cuts, max_plans, exhaustive, elementwise=True)
+    return _check(callback, series, cuts, max_plans, exhaustive, mode="series")
+
+
+def check_expr_elementwise(expr: pl.Expr, frame: pl.DataFrame, *,
+                           cuts: Sequence[int] | None = None, max_plans: int = _DEFAULT_MAX_PLANS,
+                           exhaustive: bool = False) -> dict:
+    """Check a deterministic expression using eager select on the whole frame and its slices.
+
+    The expression must select one column and return one value per input row.
+    Every batch must match the whole output dtype and exact ordered values.
+    Split options match those of check_batches.
+    """
+    if not isinstance(expr, pl.Expr):
+        raise TypeError("expr must be a Polars Expr")
+    if not isinstance(frame, pl.DataFrame):
+        raise TypeError("frame must be a Polars DataFrame")
+
+    def select(batch):
+        out = batch.select(expr)
+        if out.width != 1:
+            raise ValueError(f"expression must select exactly one output column (got {out.width})")
+        return out
+
+    return _check(select, frame, cuts, max_plans, exhaustive, mode="expr")

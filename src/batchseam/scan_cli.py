@@ -57,6 +57,10 @@ def _guidance(finding):
         message += (f"For a Series-to-Series callback, use assert_elementwise({callback}, series) from batchseam. "
                     f"For a DataFrame-to-DataFrame callback, use assert_batch_invariant({callback}, frame) from batchseam. "
                     "For other signatures, test the full-input and aligned sliced-input results in your project.")
+    if finding["flag"] == "is_elementwise" and mode != "frame":
+        message = ("If this produces a single row-preserving Polars expression, pass it directly to "
+                   "assert_expr_elementwise(expr, frame) with a representative fixture. "
+                   "To test the callback separately: " + message)
     return dict(guidance=confirm + message, argv=None, command=None)
 
 

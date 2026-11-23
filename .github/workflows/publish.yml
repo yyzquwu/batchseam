@@ -1,0 +1,62 @@
+name: Publish verified release files
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Version of an existing reviewed release, e.g. 1.0.0
+        required: true
+      wheel:
+        description: SHA-256 of the verified wheel
+        required: true
+      sdist:
+        description: SHA-256 of the verified source archive
+        required: true
+
+permissions: {}
+concurrency:
+  group: batchseam-pypi
+  cancel-in-progress: false
+
+jobs:
+  verify:
+    if: github.repository == 'yyzquwu/batchseam' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      artifact: ${{ steps.stage.outputs.artifact-id }}
+    steps:
+      - name: Download and verify the reviewed distributions
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ inputs.version }}
+          WHEEL: ${{ inputs.wheel }}
+          SDIST: ${{ inputs.sdist }}
+        run: |
+          [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          [[ "$WHEEL" =~ ^[0-9a-f]{64}$ && "$SDIST" =~ ^[0-9a-f]{64}$ ]]
+          wheel="batchseam-$VERSION-py3-none-any.whl"
+          sdist="batchseam-$VERSION.tar.gz"
+          gh release download "v$VERSION" --repo "$GITHUB_REPOSITORY" --dir dist --pattern "$wheel" --pattern "$sdist"
+          cd dist
+          printf '%s  %s\n' "$WHEEL" "$wheel" "$SDIST" "$sdist" | sha256sum --check --strict
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        id: stage
+        with:
+          name: reviewed-distributions
+          path: dist/
+          if-no-files-found: error
+  publish:
+    needs: verify
+    runs-on: ubuntu-latest
+    environment:
+      name: pypi
+      url: https://pypi.org/project/batchseam/
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          artifact-ids: ${{ needs.verify.outputs.artifact }}
+          path: dist/
+      - uses: pypa/gh-action-pypi-publish@7245906fb61fa33a13554f9d5fb856fe61758086 # v1.14.3

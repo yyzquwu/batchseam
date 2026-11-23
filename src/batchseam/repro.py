@@ -9,12 +9,12 @@ from uuid import uuid4
 import polars as pl
 from polars.testing import assert_frame_equal
 
-from . import check_elementwise
-from .core import check_batches
+from . import core
 
 _DEMOS = {"demo:sensor", "demo:running-total", "demo:dates", "demo:center", "demo:positive"}
+_EXPR_DEMOS = {"demo:fx"}
 _MAX_ATTEMPTS = 128
-_FRAME_VERSION, _SERIES_VERSION = 1, 2
+_FRAME_VERSION, _SERIES_VERSION, _EXPR_VERSION = 1, 2, 3
 _TEST = '''import json
 from pathlib import Path
 import os
@@ -24,11 +24,15 @@ import sys
 
 def test_batchseam_regression():
     # Start the installed CLI first, then restore this project's pytest import paths.
+    # Bypass cached project bytecode so edits are visible even within a timestamp tick.
     runner = (
-        "import json, sys\\n"
+        "import json, sys, tempfile\\n"
         "from batchseam.cli import main\\n"
         "sys.path[:0] = json.load(sys.stdin)\\n"
-        "raise SystemExit(main(['replay', sys.argv[1], '--json']))"
+        "with tempfile.TemporaryDirectory() as cache:\\n"
+        "    sys.pycache_prefix = cache\\n"
+        "    sys.dont_write_bytecode = True\\n"
+        "    raise SystemExit(main(['replay', sys.argv[1], '--json']))"
     )
     result = subprocess.run(
         [sys.executable, "-P", "-c", runner, str(Path(__file__).resolve().parent)],
@@ -36,7 +40,9 @@ def test_batchseam_regression():
         input=json.dumps([os.path.abspath(p) for p in sys.path]),
         capture_output=True, text=True,
     )
-    assert result.returncode == 0 and json.loads(result.stdout)["status"] == "pass", (
+    expected_code, expected_status = _EXPECTED
+    assert (result.returncode == expected_code and result.stdout
+            and json.loads(result.stdout)["status"] == expected_status), (
         f"batchseam replay exited with {result.returncode}\\n{result.stdout}{result.stderr}"
     )
 '''
@@ -49,12 +55,14 @@ def _file_spec(spec):
     return Path(filename), name
 
 
-def _saved_spec(spec, dest):
-    if spec in _DEMOS:
+def _saved_spec(spec, dest, *, expr):
+    if spec in (_EXPR_DEMOS if expr else _DEMOS):
         return spec
     source, name = _file_spec(spec)
     if not source.is_absolute():
         raise ValueError("Saving a repro requires an absolute transform path")
+    if expr and not source.is_file():
+        raise ValueError(f"Saving an expression repro requires an existing source file: {source}")
     try:
         source = Path(relpath(source, dest.resolve())).as_posix()
     except ValueError:  # Windows paths on different drives have no relative path.
@@ -116,12 +124,19 @@ def _reduce(run_check, frame, report):
     return frame, report
 
 
-def save_repro(transform, frame, report, dest, *, spec, series=None) -> dict:
-    """Reduce a failure and verify the Parquet fixture, saving only the selected Series column."""
+def save_repro(transform, frame, report, dest, *, spec, series=None, expr=False) -> dict:
+    """Reduce a failure and verify its Parquet fixture.
+
+    For expr=True, pass a Polars Expr and a source reference that can rebuild it.
+    """
+    if expr and series is not None:
+        raise ValueError("An expression repro cannot select a Series column")
+    if expr and not isinstance(transform, pl.Expr):
+        raise TypeError("Saving an expression repro requires a Polars Expr")
     if report["status"] != "fail" or report["input_rows"] != frame.height:
         raise ValueError("Saving a repro requires a failing report for this fixture")
     dest = Path(dest).absolute()
-    ref = _saved_spec(spec, dest)
+    ref = _saved_spec(spec, dest, expr=expr)
     if dest.exists() or dest.is_symlink():
         raise FileExistsError(f"Repro destination already exists: {dest}")
     if not dest.parent.is_dir():
@@ -132,9 +147,11 @@ def save_repro(transform, frame, report, dest, *, spec, series=None) -> dict:
         frame = frame.get_column(series).to_frame()
 
     def run_check(fixture, cuts):
+        if expr:
+            return core.check_expr_elementwise(transform, fixture, cuts=cuts or None)
         if series is None:
-            return check_batches(transform, fixture, cuts=cuts)
-        return check_elementwise(transform, fixture.get_column(series), cuts=cuts or None)
+            return core.check_batches(transform, fixture, cuts=cuts)
+        return core.check_elementwise(transform, fixture.get_column(series), cuts=cuts or None)
 
     original = run_check(frame, report["cuts"])
     if original.get("cuts") != report["cuts"] or original.get("difference") != report["difference"]:
@@ -166,9 +183,13 @@ def save_repro(transform, frame, report, dest, *, spec, series=None) -> dict:
                     cuts=verified["cuts"], difference=verified["difference"])
         if series is not None:
             meta.update(version=_SERIES_VERSION, mode="series", series=series)
+        elif expr:
+            meta.update(version=_EXPR_VERSION, mode="expr")
+        # A shorter expression fixture can test output length but has no interior split.
+        expected = (2, "insufficient") if expr and fixture.height < 2 else (0, "pass")
         # Pytest imports test files by basename in its default collection mode.
         with create(f"test_batchseam_{uuid4().hex}.py") as file:
-            file.write(_TEST.encode("utf-8"))
+            file.write(f"{_TEST}\n_EXPECTED = {expected!r}\n".encode("utf-8"))
         with create("repro.json") as file:
             file.write((json.dumps(meta, indent=2, allow_nan=False) + "\n").encode("utf-8"))
         cleanup.pop_all()
@@ -184,7 +205,17 @@ def load_repro(dest) -> tuple[str, pl.DataFrame, list[int]]:
 
 
 def load_repro_config(dest) -> tuple[str, pl.DataFrame, list[int], str | None]:
-    """Load a bundle, resolving user transforms relative to it and identifying Series inputs."""
+    """Load a frame or Series bundle, resolving its source reference."""
+    spec, fixture, cuts, series, _ = _load_repro_case(dest, allow_expr=False)
+    return spec, fixture, cuts, series
+
+
+def load_repro_case(dest) -> tuple[str, pl.DataFrame, list[int], str | None, bool]:
+    """Return (spec, fixture, cuts, series, expr), resolving spec relative to the bundle."""
+    return _load_repro_case(dest, allow_expr=True)
+
+
+def _load_repro_case(dest, *, allow_expr):
     dest = Path(dest).resolve()
     manifest = dest / "repro.json"
     try:
@@ -192,10 +223,16 @@ def load_repro_config(dest) -> tuple[str, pl.DataFrame, list[int], str | None]:
     except (UnicodeDecodeError, json.JSONDecodeError) as err:
         raise ValueError(f"Invalid repro manifest {manifest}: {err}") from err
     if (not isinstance(meta, dict) or type(meta.get("version")) is not int
-            or meta["version"] not in (_FRAME_VERSION, _SERIES_VERSION)):
+            or meta["version"] not in (_FRAME_VERSION, _SERIES_VERSION, _EXPR_VERSION)):
         raise ValueError("Unsupported repro bundle version")
+    expr = meta["version"] == _EXPR_VERSION
     series = None
-    if meta["version"] == _SERIES_VERSION:
+    if expr:
+        if not allow_expr:
+            raise ValueError("Use load_repro_case for an expression bundle to retain its mode.")
+        if meta.get("mode") != "expr" or "series" in meta:
+            raise ValueError("Invalid expression mode or Series column in repro.json")
+    elif meta["version"] == _SERIES_VERSION:
         series = meta.get("series")
         if meta.get("mode") != "series" or not isinstance(series, str):
             raise ValueError("Invalid Series mode or column in repro.json")
@@ -204,7 +241,7 @@ def load_repro_config(dest) -> tuple[str, pl.DataFrame, list[int], str | None]:
     spec, cuts, rows = meta.get("transform"), meta.get("cuts"), meta.get("input_rows")
     if not isinstance(spec, str):
         raise ValueError("Invalid transform reference in repro.json")
-    if spec not in _DEMOS:
+    if spec not in (_EXPR_DEMOS if expr else _DEMOS):
         source, name = _file_spec(spec)
         spec = f"{(dest / source).resolve()}:{name}"
     fixture = pl.read_parquet(dest / "fixture.parquet")
@@ -214,23 +251,24 @@ def load_repro_config(dest) -> tuple[str, pl.DataFrame, list[int], str | None]:
             or any(a >= b for a, b in zip(cuts, cuts[1:]))):
         raise ValueError("Repro cuts must be strictly increasing interior offsets")
     whole_failure = False
-    if series is not None:
-        if fixture.columns != [series]:
-            raise ValueError("Repro Series column does not match fixture.parquet")
+    if series is not None and fixture.columns != [series]:
+        raise ValueError("Repro Series column does not match fixture.parquet")
+    if expr or series is not None:
+        mode = "Expression" if expr else "Series"
         diff = meta.get("difference")
         if not isinstance(diff, dict) or diff.get("kind") not in ("length", "value", "schema", "batch_error"):
-            raise ValueError("Invalid Series difference in repro.json")
+            raise ValueError(f"Invalid {mode} difference in repro.json")
         if diff["kind"] == "length":
-            whole_failure = _validate_length(diff, cuts, rows)
+            whole_failure = _validate_length(diff, cuts, rows, mode)
     if not cuts and not whole_failure:
         raise ValueError("Repro cuts must be strictly increasing interior offsets")
-    return spec, fixture, cuts, series
+    return spec, fixture, cuts, series, expr
 
 
-def _validate_length(diff, cuts, rows):
+def _validate_length(diff, cuts, rows, mode):
     scope, expected, actual = diff.get("scope"), diff.get("expected"), diff.get("actual")
     if type(expected) is not int or type(actual) is not int or actual < 0 or actual == expected:
-        raise ValueError("Invalid Series length difference in repro.json")
+        raise ValueError(f"Invalid {mode} length difference in repro.json")
     if scope == "whole" and not cuts and "input_span" not in diff and expected == rows:
         return True
     if scope == "batch" and cuts:
@@ -238,4 +276,4 @@ def _validate_length(diff, cuts, rows):
         for start, end in zip((0, *cuts), (*cuts, rows)):
             if span == [start, end] and all(type(offset) is int for offset in span) and expected == end - start:
                 return False
-    raise ValueError("Series length difference does not match the repro cuts and input rows")
+    raise ValueError(f"{mode} length difference does not match the repro cuts and input rows")

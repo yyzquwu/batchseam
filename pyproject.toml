@@ -4,11 +4,15 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "batchseam"
-version = "0.4.0"
-description = "Check whether a Polars transformation changes when its input is split into batches."
+version = "0.5.0"
+description = "Test Polars expressions across batch boundaries and save failures as pytest regressions."
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = ["polars>=2.1,<3"]
+
+[project.urls]
+Repository = "https://github.com/yyzquwu/batchseam"
+Issues = "https://github.com/yyzquwu/batchseam/issues"
 
 [project.scripts]
 batchseam = "batchseam.cli:main"

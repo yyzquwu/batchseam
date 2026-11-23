@@ -2,7 +2,7 @@ from collections.abc import Callable, Sequence
 
 import polars as pl
 
-from .core import _DEFAULT_MAX_PLANS, check_batches, check_elementwise
+from .core import _DEFAULT_MAX_PLANS, check_batches, check_elementwise, check_expr_elementwise
 
 
 def assert_batch_invariant(transform: Callable[[pl.DataFrame], pl.DataFrame], frame: pl.DataFrame, *,
@@ -20,7 +20,15 @@ def assert_elementwise(callback: Callable[[pl.Series], pl.Series], series: pl.Se
                    elementwise=True)
 
 
-def _assert_report(report, *, elementwise=False):
+def assert_expr_elementwise(expr: pl.Expr, frame: pl.DataFrame, *,
+                            cuts: Sequence[int] | None = None, max_plans: int = _DEFAULT_MAX_PLANS,
+                            exhaustive: bool = False) -> None:
+    """Assert that eager expression evaluation preserves one ordered value per row across splits."""
+    _assert_report(check_expr_elementwise(expr, frame, cuts=cuts, max_plans=max_plans, exhaustive=exhaustive),
+                   elementwise=True, whole_input="frame")
+
+
+def _assert_report(report, *, elementwise=False, whole_input="series"):
     if report["status"] == "pass":
         return
     if report["status"] == "insufficient":
@@ -32,7 +40,7 @@ def _assert_report(report, *, elementwise=False):
     check = "Elementwise check" if elementwise else "Batch invariance"
     msg = f"{check} failed"
     if diff.get("scope") == "whole":
-        msg += " on the whole series"
+        msg += f" on the whole {whole_input}"
     else:
         msg += f" at cuts {report['cuts']}"
     if kind == "value":
@@ -47,6 +55,8 @@ def _assert_report(report, *, elementwise=False):
         msg += f". Expected {diff['expected']} output rows, actual {diff['actual']}."
     if "whole" in diff:
         msg += f". Expected {diff['whole']!r}, actual {diff['batched']!r}."
+    if diff.get("input_values"):
+        msg += f" Input row values were {diff['input_values']!r}."
     if "error" in diff:
         msg += f". {diff['error']}"
     raise AssertionError(msg)

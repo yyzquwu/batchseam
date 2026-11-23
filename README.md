@@ -1,6 +1,35 @@
 # Batchseam
 
-**Check a Polars batch callback and keep the failing rows as a pytest regression.** For an elementwise Series callback, Batchseam checks that every input row gets one output and that changing the batch boundary preserves dtype, order, and values. For a DataFrame transform, it checks whether concatenating the transformed slices reproduces the whole-frame result.
+**Test your Polars expression on the whole fixture and on slices.** Batchseam finds the first output that changes when a batch ends and can save the failing input as a pytest regression.
+
+## Two trades, two different answers
+
+From a Python 3.12 environment in this checkout:
+
+```sh
+python -m pip install ".[test]"
+python -m batchseam demo fx
+```
+
+For an install from the release tag, run `uvx --python 3.12 --from git+https://github.com/yyzquwu/batchseam.git@v0.5.0 batchseam demo fx`.
+
+Both trades have an amount of 10. Their exchange rates are 1 and 2. The demo callback uses the first rate in each batch. On the whole fixture it converts the second trade to 10. With a cut after the first trade it converts that same trade to 20. The demo exits 1 because the outputs differ.
+
+Pass the same `pl.Expr` you use in production directly to pytest. This works when the expression encloses an inline lambda, a configured object's method, or a multi-column callback:
+
+```python
+import polars as pl
+from batchseam import assert_expr_elementwise
+
+def test_trade_conversion():
+    trades = pl.DataFrame({"amount": [10, 10], "rate": [1.0, 2.0]})
+    usd = (pl.col("amount") * pl.col("rate")).alias("usd")
+    assert_expr_elementwise(usd, trades)
+```
+
+Use this assertion for a deterministic expression expected to produce **one column and one value per input row**. Batchseam evaluates the expression with Polars on the fixture and on each slice, checks lengths, then compares ordered values and dtype. A pass covers the fixture and splits tried. Polars chooses its own internal execution schedule.
+
+To save the failing exchange-rate example, run `batchseam demo fx --save-repro fx-repro`, then `batchseam replay fx-repro`. For your own expression, use `batchseam check pipeline.py:to_usd trades.parquet --expr --save-repro fx-regression`. The target can be a module-level expression or a zero-argument factory that constructs it. Run `python -m pytest -q fx-regression` after correcting the source. The bundle contains real fixture rows, so choose the input you want to keep.
 
 ## Find your first check
 

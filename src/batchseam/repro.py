@@ -4,6 +4,7 @@ from contextlib import ExitStack
 import json
 from os.path import relpath
 from pathlib import Path
+from uuid import uuid4
 
 import polars as pl
 from polars.testing import assert_frame_equal
@@ -136,7 +137,8 @@ def save_repro(transform, frame, report, dest, *, spec) -> dict:
         meta = dict(version=_VERSION, transform=ref, original_input_rows=frame.height,
                     original_cuts=original["cuts"], input_rows=fixture.height,
                     cuts=verified["cuts"], difference=verified["difference"])
-        with create("test_regression.py") as file:
+        # Pytest imports test files by basename in its default collection mode.
+        with create(f"test_batchseam_{uuid4().hex}.py") as file:
             file.write(_TEST.encode("utf-8"))
         with create("repro.json") as file:
             file.write((json.dumps(meta, indent=2, allow_nan=False) + "\n").encode("utf-8"))

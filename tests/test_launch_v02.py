@@ -62,6 +62,14 @@ def test_running_total_bundle_human_output(tmp_path):
     assert "2 input rows" in result.stdout and "column 'balance'" in result.stdout
 
 
+def test_multiple_saved_regressions_collect_in_one_pytest_run(tmp_path):
+    for name in ["sensor", "running-total"]:
+        result = _run("batchseam", "demo", name, "--save-repro", tmp_path / name, cwd=tmp_path)
+        assert result.returncode == 1 and not result.stderr
+    result = _run("pytest", "-q", tmp_path, cwd=tmp_path)
+    assert result.returncode == 1 and "2 failed" in result.stdout
+
+
 def test_user_bundle_and_generated_test_track_current_source(tmp_path):
     source = tmp_path / "project files"
     source.mkdir()
@@ -89,7 +97,7 @@ def test_user_bundle_and_generated_test_track_current_source(tmp_path):
     assert result.returncode == 1 and json.loads(result.stdout)["status"] == "fail"
     assert "checking transform" in result.stderr
 
-    test = bundle / "test_regression.py"
+    test, = bundle.glob("test_batchseam_*.py")
     result = _run("pytest", "-q", test, cwd=alternate_cwd)
     assert result.returncode == 1
     assert "batchseam replay exited with 1" in result.stdout and "column 'balance'" in result.stdout

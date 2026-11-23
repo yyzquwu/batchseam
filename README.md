@@ -19,7 +19,7 @@ The demo forward-fills 100 sensor readings. Only row 41 is null. When a batch st
 
 ```sh
 python -m batchseam replay sensor-repro
-python -m pytest -q sensor-repro/test_regression.py
+python -m pytest -q sensor-repro
 ```
 
 Both commands reproduce the failure. The bundle contains the ordered rows in `fixture.parquet`, the transform reference and cut offsets in `repro.json`, and a pytest test. For a transform from your project, the test runs your current code. Keep the bundle and source in the same relative locations when moving a project. Paths across Windows drives use an absolute reference. The original running-total example is still available with `python -m batchseam demo`.

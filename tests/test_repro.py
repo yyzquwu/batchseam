@@ -41,7 +41,8 @@ def test_reduce_in_original_order_and_remap_cuts(tmp_path, values, cuts, expecte
     assert meta["input_rows"] == 2
     assert_frame_equal(fixture, pl.DataFrame({"x": expected}, schema=frame.schema))
     assert check_batches(_fill, fixture, cuts=replay_cuts)["difference"] == meta["difference"]
-    assert {p.name for p in dest.iterdir()} == {"fixture.parquet", "repro.json", "test_regression.py"}
+    test, = dest.glob("test_batchseam_*.py")
+    assert {p.name for p in dest.iterdir()} == {"fixture.parquet", "repro.json", test.name}
 
 
 @pytest.mark.parametrize("kind", ["batch_error", "schema", "value"])
@@ -146,7 +147,8 @@ def test_moved_bundle_regression_uses_current_source(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     script, bundle = moved / script.name, moved / bundle.relative_to(project)
     assert load_repro(bundle)[0] == f"{script.resolve()}:transform"
-    regression = runpy.run_path(str(bundle / "test_regression.py"))["test_batchseam_regression"]
+    test, = bundle.glob("test_batchseam_*.py")
+    regression = runpy.run_path(str(test))["test_batchseam_regression"]
     with pytest.raises(AssertionError, match="batchseam replay exited with 1") as err:
         regression()
     assert "FAIL" in str(err.value)

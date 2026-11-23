@@ -1,4 +1,5 @@
 import json
+import os
 from pathlib import Path
 import subprocess
 import sys
@@ -91,8 +92,10 @@ def _run_check(root, name, args, *, artifact=None):
     if artifact is not None:
         args = [*args, "--save-repro", str(artifact)]
     try:
-        result = subprocess.run([sys.executable, "-I", "-m", "batchseam", "check", *args],
-                                cwd=root, capture_output=True, text=True, errors="replace")
+        # Start from the same installed package, including user-site installs, before any project code.
+        env = {**os.environ, "PYTHONPATH": str(Path(__file__).resolve().parents[1])}
+        result = subprocess.run([sys.executable, "-P", "-m", "batchseam", "check", *args],
+                                cwd=root, env=env, capture_output=True, text=True, errors="replace")
     except OSError as err:
         return dict(name=name, status="error", diagnostic=f"Could not start batchseam check: {err}")
 

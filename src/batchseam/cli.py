@@ -218,7 +218,7 @@ def main(argv=None):
             print(format_suite_markdown(result), end="")
         else:
             for item in result["checks"]:
-                print(f"{item['status'].upper():12}{item['name']!r}")
+                print(f"{item['status'].upper():12} {item['name']!r}")
                 if "diagnostic" in item:
                     print(item["diagnostic"])
                 elif item["status"] == "fail":

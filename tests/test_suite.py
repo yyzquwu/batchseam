@@ -147,7 +147,7 @@ def test_suite_marks_bad_process_results_as_errors_and_keeps_running(
     report = dict(status="pass", input_rows=2, checked=1)
 
     def run(args, *, cwd, **kwargs):
-        assert args[:5] == [sys.executable, "-I", "-m", "batchseam", "check"]
+        assert args[:5] == [sys.executable, "-P", "-m", "batchseam", "check"]
         assert cwd == tmp_path
         calls.append(args)
         if len(calls) > 1:

@@ -92,9 +92,10 @@ def test_series_bundle_rejects_inconsistent_metadata(tmp_path):
     bundle = tmp_path / "repro"
     meta = save_repro(callback, values.to_frame(), check_elementwise(callback, values), bundle,
                       spec="demo:positive", series="x")
-    spec, fixture, cuts = load_repro(bundle)
-    assert spec == "demo:positive" and fixture.columns == ["x"] and cuts == []
-    assert load_repro_config(bundle)[3] == "x"
+    with pytest.raises(ValueError, match="load_repro_config"):
+        load_repro(bundle)
+    spec, fixture, cuts, column = load_repro_config(bundle)
+    assert spec == "demo:positive" and fixture.columns == [column] == ["x"] and cuts == []
     manifest = bundle / "repro.json"
     for fields, message in [
         (dict(version=1), "Frame repro bundles"),

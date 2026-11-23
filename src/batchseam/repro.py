@@ -176,8 +176,10 @@ def save_repro(transform, frame, report, dest, *, spec, series=None) -> dict:
 
 
 def load_repro(dest) -> tuple[str, pl.DataFrame, list[int]]:
-    """Load the fixture and cuts using the legacy three-item return value."""
-    spec, fixture, cuts, _ = load_repro_config(dest)
+    """Load a DataFrame bundle using the legacy three-item return value."""
+    spec, fixture, cuts, series = load_repro_config(dest)
+    if series is not None:
+        raise ValueError("Use load_repro_config for a Series bundle to retain the selected column.")
     return spec, fixture, cuts
 
 

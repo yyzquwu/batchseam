@@ -68,6 +68,9 @@ class _Scan(ast.NodeVisitor):
             return
         keep = (not self.conditional or isinstance(node, (ast.Import, ast.ImportFrom))
                 or isinstance(value, (ast.Name, ast.Attribute)))
+        # An unset class attribute can resolve to a different name in the enclosing scope.
+        if self.conditional and self.scope.kind == "class":
+            keep = False
         self.scope.bindings.setdefault(name, []).append(_Binding(
             node, value if keep else None,
             annotation if not self.conditional else None, annotation_scope or self.scope,
@@ -363,10 +366,12 @@ def discover(source: str, path: str) -> list[dict]:
             mode, receiver, index = callee.split(".")[0], getattr(func, "value", func), 0
         elif isinstance(func, ast.Attribute) and func.attr == "map_batches":
             mode, receiver, index = "unknown", func.value, 0
-            if len(call.args) >= 2 and isinstance(call.args[0], (ast.List, ast.Tuple)):
-                index = 1
         else:
             continue
+        confirmed = mode != "unknown"
+        if mode != "multi" and (any(kw.arg == "exprs" for kw in call.keywords)
+                                or len(call.args) >= 2 and isinstance(call.args[0], (ast.List, ast.Tuple))):
+            mode, index, confirmed = "multi", 1, False
         callback = _callback(call, index)
         kind = {ast.Name: "named", ast.Lambda: "lambda", ast.Attribute: "bound"}.get(type(callback), "other")
         if isinstance(callback, ast.Attribute):
@@ -376,9 +381,9 @@ def discover(source: str, path: str) -> list[dict]:
         for flag in flags:
             findings.append({
                 "path": path, "line": call.lineno, "flag": flag, "receiver": _short(receiver),
-                "confidence": "ambiguous" if mode == "unknown" else "polars", "kind": kind,
+                "confidence": "polars" if confirmed else "ambiguous", "kind": kind,
                 "callback": _short(callback) if callback is not None else "<unknown>",
-                "target": _target(scan, callback, scope, call, mode, path) if _FLAGS.get(mode) == flag else None,
+                "target": _target(scan, callback, scope, call, mode, path) if confirmed and _FLAGS.get(mode) == flag else None,
                 "mode": mode,
             })
     return findings

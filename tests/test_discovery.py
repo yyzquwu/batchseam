@@ -248,5 +248,23 @@ def test_optional_method_alias_and_shared_nonlocal_do_not_guess_series_contract(
             return select()
         apply(["x", "y"], add, is_elementwise=True)
     ''')
-    assert (a["mode"], a["target"], a["callback"]) == ("unknown", None, "add")
+    assert (a["mode"], a["confidence"], a["target"], a["callback"]) == ("multi", "ambiguous", None, "add")
     assert (b["mode"], b["callback"]) == ("multi", "add")
+
+
+def test_conditional_class_binding_cannot_override_multi_input_signature():
+    a, b = scan('''
+        import polars as pl
+        receiver = pl
+        expr = pl.col("x")
+        def combine(parts): return parts[0] + parts[1]
+        class Pipeline:
+            if use_expr:
+                receiver = expr
+            if not use_expr:
+                report = receiver.map_batches(["x", "y"], combine, is_elementwise=True)
+            if use_expr:
+                single = receiver.map_batches(combine, is_elementwise=True)
+    ''')
+    assert [(row["mode"], row["confidence"], row["target"]) for row in (a, b)] == [
+        ("multi", "ambiguous", None), ("unknown", "ambiguous", None)]

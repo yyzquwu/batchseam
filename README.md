@@ -4,7 +4,13 @@
 
 ## Two trades, two different answers
 
-From a Python 3.12 environment in this checkout:
+Try the packaged demo from any directory:
+
+```sh
+uvx --python 3.12 batchseam demo fx
+```
+
+For tests and development from this checkout, use a Python 3.12 virtual environment:
 
 ```sh
 python -m pip install ".[test]"

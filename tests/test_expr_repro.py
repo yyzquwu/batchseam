@@ -162,6 +162,13 @@ def test_generated_expression_test_uses_edited_packaged_source(tmp_path):
     os.utime(script, ns=(original.st_atime_ns, original.st_mtime_ns))
     assert _cli("replay", bundle, cwd=tmp_path, code=0)["status"] == "pass"
     regression()
+    # A passing cached module must not hide a subsequently introduced regression.
+    py_compile.compile(str(script), doraise=True)
+    script.write_text(header + ".cum_sum()\n", encoding="utf-8")
+    os.utime(script, ns=(original.st_atime_ns, original.st_mtime_ns))
+    frame.write_parquet(tmp_path / "rows.parquet")
+    assert _cli("check", f"{script}:expr", "rows.parquet", "--expr", cwd=tmp_path, code=1)["status"] == "fail"
+    assert _cli("replay", bundle, cwd=tmp_path, code=1)["status"] == "fail"
 
 
 def test_expression_readback_rejects_a_changed_difference(tmp_path, monkeypatch):

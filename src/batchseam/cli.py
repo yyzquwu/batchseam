@@ -15,7 +15,7 @@ from .repro import load_repro_case, save_repro
 
 @contextmanager
 def _current_source():
-    """Replay edits even when a project module's timestamp and size still match its pyc."""
+    """Load current source even when an edit has the same timestamp and size as its pyc."""
     prefix, disabled = sys.pycache_prefix, sys.dont_write_bytecode
     with TemporaryDirectory() as empty:
         try:
@@ -197,7 +197,7 @@ def main(argv=None):
         return scan_report(args.path, as_json=args.json)
     original_path = sys.path[:]
     try:
-        with redirect_stdout(sys.stderr), (_current_source() if args.command == "replay" else nullcontext()):
+        with redirect_stdout(sys.stderr), (_current_source() if args.command in ("check", "replay") else nullcontext()):
             if args.command == "replay":
                 fixture_label = str(args.directory / "fixture.parquet")
                 spec, frame, cuts, series, expr = load_repro_case(args.directory)
